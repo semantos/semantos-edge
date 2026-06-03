@@ -1,0 +1,38 @@
+# Cold Chain Monitor — sdkconfig.defaults
+#
+# Set WIFI_SSID / WIFI_PASS via menuconfig (Component config → Cold Chain)
+# or override on the idf.py command line:
+#   idf.py -DCONFIG_CC_WIFI_SSID='"MyNet"' -DCONFIG_CC_WIFI_PASS='"secret"' build
+#
+# Flash and run:
+#   idf.py -p /dev/ttyUSB0 flash monitor
+
+# ── Partition table ──────────────────────────────────────────────────────────
+# Default 4MB with NVS + OTA (gives ~24KB NVS = ~100 buffered readings)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# ── CPU / power ──────────────────────────────────────────────────────────────
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+
+# ── WiFi ─────────────────────────────────────────────────────────────────────
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_TX_BUFFER_TYPE_DYNAMIC=y
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=4
+
+# ── HTTP client ───────────────────────────────────────────────────────────────
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=n
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# ── mbedTLS ── (needed for SHA-256 cell ID derivation) ───────────────────────
+CONFIG_MBEDTLS_HARDWARE_SHA=y
+
+# ── No WAMR / cell-engine WASM ───────────────────────────────────────────────
+# The cold chain firmware does NOT run Bitcoin Script predicates on-device.
+# Threshold logic is plain C. Disabling WAMR frees ~200 KB SRAM.
+# (If you add cell-engine later, re-enable and set build_options.embedded.)
+CONFIG_SPIRAM=n

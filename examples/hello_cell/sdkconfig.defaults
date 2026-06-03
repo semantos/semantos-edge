@@ -1,0 +1,35 @@
+# Default sdkconfig for hello_cell.
+#
+# wasm3 was the original size-preferred runtime but is no longer in the
+# Espressif component registry. WAMR (`espressif/wasm-micro-runtime`) is
+# the active option. Bigger code footprint (~150KB vs ~64KB) but supports
+# all current targets including ESP32-C6 without PSRAM.
+
+# CONFIG_SEMANTOS_RUNTIME_WASM3 is not set
+CONFIG_SEMANTOS_RUNTIME_WAMR=y
+
+CONFIG_SEMANTOS_WASM_STACK_SIZE=16384
+CONFIG_SEMANTOS_LOG_HOST_CALLS=n
+
+# Bump the main task stack a bit — the example is shallow but the WAMR
+# interpreter wants headroom (more than wasm3 needed).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Log level set to INFO so you actually see the kernel traces.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# host_crypto_mbedtls.c calls mbedtls_ripemd160() to implement the
+# hash160 host import (SHA256 then RIPEMD160 — Bitcoin-style). Not
+# enabled in IDF's mbedTLS defaults; flip on here.
+CONFIG_MBEDTLS_RIPEMD160_C=y
+
+# Zig 0.15 emits "reference types" WASM by default. WAMR's IDF Kconfig
+# default has this feature OFF, which makes it reject the cell-engine
+# blob at load time with "zero byte expected". Enable it here.
+CONFIG_WAMR_ENABLE_REF_TYPES=y
+
+# WAMR's lib_pthread feature defaults ON and calls pthread_self() internally
+# for locking. Our app_main is a normal FreeRTOS task, not a pthread, so
+# pthread_self asserts "Failed to find current thread ID!" and crashes the
+# board. The cell-engine demo is single-threaded; disabling it here is fine.
+CONFIG_WAMR_ENABLE_LIB_PTHREAD=n

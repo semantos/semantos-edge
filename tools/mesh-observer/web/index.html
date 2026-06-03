@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cell-mesh observer</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0e0e10; color: #d4d4d8;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 13px;
+  }
+  body { display: grid; grid-template-rows: auto 1fr; gap: 16px; padding: 16px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; }
+  header h1 { margin: 0; font-size: 16px; font-weight: 500; color: #fafafa; letter-spacing: 0.5px; }
+  header .conn { color: #84cc16; font-size: 12px; }
+  header .conn.bad { color: #ef4444; }
+
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; min-height: 0; }
+
+  .cards { display: grid; gap: 12px; grid-auto-rows: min-content; }
+  .card {
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 6px;
+    padding: 12px 14px;
+    position: relative;
+  }
+  .card .role {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    background: #27272a; color: #a1a1aa;
+    margin-right: 6px;
+  }
+  .card .role.originator   { background: #1e3a8a; color: #bfdbfe; }
+  .card .role.relay        { background: #92400e; color: #fde68a; }
+  .card .role.destination  { background: #166534; color: #bbf7d0; }
+  .card .mac     { color: #fafafa; font-weight: 500; }
+  .card .port    { color: #71717a; font-size: 11px; margin-left: 6px; }
+  .card .meta    { color: #71717a; font-size: 11px; margin-top: 2px; }
+  .card .led {
+    position: absolute; top: 12px; right: 12px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #3f3f46;
+    box-shadow: 0 0 0 1px #0a0a0a inset;
+    transition: background 60ms, box-shadow 60ms;
+  }
+  .card .led.on {
+    background: #fde047;
+    box-shadow: 0 0 0 1px #0a0a0a inset, 0 0 14px 2px #ca8a04;
+  }
+  .card .led.channel {
+    background: #fbbf24;
+    box-shadow: 0 0 0 1px #0a0a0a inset, 0 0 20px 4px #f59e0b;
+  }
+
+  .counters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 12px; margin-top: 10px; }
+  .ctr { font-size: 11px; }
+  .ctr .k { color: #71717a; }
+  .ctr .v { color: #fafafa; }
+
+  .channel {
+    margin-top: 10px; padding: 8px; border-radius: 4px;
+    background: #0f1419; border: 1px solid #1f2937;
+  }
+  .channel .badge {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; letter-spacing: 0.5px;
+  }
+  .channel .badge.closed   { background: #27272a; color: #71717a; }
+  .channel .badge.open     { background: #1e3a8a; color: #bfdbfe; }
+  .channel .badge.active   { background: #166534; color: #bbf7d0; }
+  .channel .badge.expired  { background: #7f1d1d; color: #fca5a5; }
+  .channel .row { display: flex; gap: 16px; margin-top: 4px; font-size: 11px; }
+  .channel .row .k { color: #71717a; }
+  .channel .row .v { color: #fafafa; }
+
+  .timeline {
+    background: #18181b; border: 1px solid #27272a; border-radius: 6px;
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .timeline h2 {
+    margin: 0; padding: 10px 14px; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;
+    color: #71717a; border-bottom: 1px solid #27272a;
+  }
+  .events { flex: 1; overflow-y: auto; padding: 6px 0; }
+  .event {
+    display: grid;
+    grid-template-columns: 70px 90px 50px 1fr;
+    gap: 8px;
+    padding: 2px 14px;
+    font-size: 11px;
+    line-height: 1.4;
+    border-left: 2px solid transparent;
+  }
+  .event:hover { background: #1f1f23; }
+  .event .ts   { color: #71717a; }
+  .event .port { color: #52525b; font-size: 10px; }
+  .event .tag  { color: #fafafa; font-weight: 500; }
+  .event .body { color: #d4d4d8; }
+  .event.tx      { border-left-color: #3b82f6; }
+  .event.rx      { border-left-color: #84cc16; }
+  .event.effect  { border-left-color: #f59e0b; }
+  .event.channel { border-left-color: #d946ef; }
+  .event.rule    { border-left-color: #a855f7; }
+  .event.boot, .event.role, .event.bench, .event.deck { border-left-color: #71717a; color: #a1a1aa; }
+  .event.telem_tx { border-left-color: #06b6d4; }
+  .event.telem_rx { border-left-color: #22d3ee; }
+
+  .track-wrap { display: flex; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+  .track-col, .metrics-col { flex: 1 1 320px; }
+  .track-wrap h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: #a1a1aa; margin: 0 0 8px; }
+  .track-wrap h2 .hint { text-transform: none; letter-spacing: 0; color: #52525b; font-weight: 400; }
+  #track { background: #0a0a0c; border: 1px solid #27272a; border-radius: 8px; width: 100%; height: auto; }
+  .metrics { display: flex; flex-direction: column; gap: 10px; }
+  .mrow { background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 10px 12px; }
+  .mrow .spd { font-weight: 600; color: #fafafa; }
+  .mrow .port { color: #71717a; font-size: 11px; margin-left: 6px; }
+  .mrow .pred { color: #06b6d4; font-size: 10px; margin-left: 6px; }
+  .mgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 14px; margin-top: 8px; }
+  .mgrid .k { color: #71717a; font-size: 10px; display: block; }
+  .mgrid .v { color: #fafafa; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .mgrid .v.warn { color: #f59e0b; }
+  .mgrid .v.bad  { color: #ef4444; }
+  .disclaimer { color: #52525b; font-size: 11px; line-height: 1.5; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>cell-mesh observer</h1>
+  <span class="conn" id="conn">connecting…</span>
+</header>
+<main>
+  <section class="track-wrap" id="track-wrap" style="display:none">
+    <div class="track-col">
+      <h2>speeder track <span class="hint">— truth (solid) vs sideline-received (hollow)</span></h2>
+      <canvas id="track" width="640" height="420"></canvas>
+    </div>
+    <div class="metrics-col">
+      <h2>real-time performance</h2>
+      <div id="metrics" class="metrics"></div>
+      <p class="disclaimer" id="metrics-note"></p>
+    </div>
+  </section>
+  <section class="cards" id="cards"></section>
+  <section class="timeline">
+    <h2>events</h2>
+    <div class="events" id="events"></div>
+  </section>
+</main>
+<script>
+// ── State ──────────────────────────────────────────────────────────
+const STATE  = {};   // port -> device state from server
+const EVENTS = [];   // newest first
+const MAX_DISPLAY = 200;
+let SPEEDERS = {};   // spd -> { truth, rx, predicted, ... }
+let METRICS  = {};   // key -> { hz, jitterMs, latencyMeanMs, dropRate, port, spd, ... }
+let ws = null;
+
+const $conn   = document.getElementById('conn');
+const $cards  = document.getElementById('cards');
+const $events = document.getElementById('events');
+const $trackWrap = document.getElementById('track-wrap');
+const $metrics   = document.getElementById('metrics');
+const $metricsNote = document.getElementById('metrics-note');
+const $track  = document.getElementById('track');
+const tctx    = $track.getContext('2d');
+
+// ── Connection ─────────────────────────────────────────────────────
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { $conn.textContent = 'connected'; $conn.classList.remove('bad'); };
+  ws.onclose = () => {
+    $conn.textContent = 'disconnected — retrying…'; $conn.classList.add('bad');
+    setTimeout(connect, 1500);
+  };
+  ws.onerror = () => { $conn.classList.add('bad'); };
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'snapshot') {
+      Object.assign(STATE, msg.state);
+      if (msg.speeders) SPEEDERS = msg.speeders;
+      if (msg.metrics)  METRICS  = msg.metrics;
+      for (const e of msg.events) prependEvent(e);
+      render();
+    } else if (msg.type === 'event') {
+      STATE[msg.event.port] = msg.state;
+      if (msg.speeders) SPEEDERS = msg.speeders;
+      if (msg.metrics)  METRICS  = msg.metrics;
+      const isTelem = msg.event.type === 'telem_tx' || msg.event.type === 'telem_rx';
+      if (isTelem) {
+        // Telemetry is visualized in the track + metrics panel — keep it OUT
+        // of the human-readable timeline (else ~120 events/sec swamp it and
+        // force a full re-render each tick). Track redraws on rAF.
+        $trackWrap.style.display = 'flex';
+        renderMetrics();
+      } else {
+        prependEvent(msg.event);
+        render();
+      }
+    }
+  };
+}
+
+function prependEvent(e) {
+  EVENTS.unshift(e);
+  if (EVENTS.length > MAX_DISPLAY) EVENTS.length = MAX_DISPLAY;
+}
+
+// ── Render ─────────────────────────────────────────────────────────
+const ROLE_LABEL = {
+  'A=ORIGINATOR':   'originator',
+  'B=RELAY':         'relay',
+  'C=DESTINATION':  'destination',
+  'spectator':       'spectator',
+};
+
+function fmtTs(ms) {
+  if (!ms) return '';
+  const s = (ms / 1000).toFixed(1);
+  return s + 's';
+}
+
+function fmtPort(p) {
+  return p.replace('/dev/cu.', '');
+}
+
+function renderCards() {
+  const ports = Object.keys(STATE).sort();
+  $cards.innerHTML = '';
+  for (const p of ports) {
+    const d = STATE[p];
+    const card = document.createElement('div');
+    card.className = 'card';
+    const role = ROLE_LABEL[d.role] ?? '?';
+    const ch   = d.channel ?? { state: 'closed' };
+
+    const ledOn      = Date.now() < (d.blink_until_ms ?? 0);
+    const ledChannel = ch.state === 'active';
+
+    card.innerHTML = `
+      <div class="led ${ledChannel ? 'channel' : (ledOn ? 'on' : '')}"></div>
+      <div>
+        <span class="role ${role}">${role}</span>
+        <span class="mac">${d.mac ?? '—'}</span>
+        <span class="port">${fmtPort(d.port)}</span>
+      </div>
+      <div class="meta">
+        bench: ${d.bench_us ? `${(d.bench_us/1000).toFixed(0)} ms/verify` : '—'} ·
+        last: ${fmtTs(d.last_event_ms ? Date.now() - d.last_event_ms : 0)} ago
+      </div>
+      <div class="counters">
+        <div class="ctr"><span class="k">heartbeat</span> <span class="v">${d.tx.heartbeat}</span></div>
+        <div class="ctr"><span class="k">tap</span>       <span class="v">${d.tx.tap}</span></div>
+        <div class="ctr"><span class="k">emit</span>      <span class="v">${d.tx.emit_confirmed_tap ?? 0}</span></div>
+        <div class="ctr"><span class="k">fwd orig</span>  <span class="v">${d.tx.forward_originated ?? 0}</span></div>
+        <div class="ctr"><span class="k">fwd relay</span> <span class="v">${d.tx.forward_relay ?? 0}</span></div>
+        <div class="ctr"><span class="k">rx total</span>  <span class="v">${d.rx_total}</span></div>
+      </div>
+      <div class="channel">
+        <span class="badge ${ch.state}">${ch.state.toUpperCase()}</span>
+        ${ch.state === 'active' || ch.state === 'expired' ? `
+          <div class="row">
+            <span><span class="k">seq</span> <span class="v">${ch.seq ?? 0}</span></span>
+            <span><span class="k">device_share</span> <span class="v">${ch.device_share ?? 0}</span></span>
+            <span><span class="k">expiry_ms</span> <span class="v">${ch.expiry_ms ?? 0}</span></span>
+          </div>` : ''}
+      </div>
+    `;
+    $cards.appendChild(card);
+  }
+}
+
+function describeEvent(e) {
+  const d = e.data;
+  switch (e.type) {
+    case 'tx':      return `${d.kind}${d.counter != null ? ` #${d.counter}` : ''}${d.step != null ? ` step=${d.step}` : ''}`;
+    case 'rx':      return `${d.kind}${d.sender ? ` ← ${d.sender.slice(-5)}` : ''}${d.rx_total != null ? ` (#${d.rx_total})` : ''}${d.next ? ` → ${d.next.slice(-5)} rem=${d.remaining}` : ''}`;
+    case 'effect':  return d.kind === 'forward_delivered'
+                      ? `FORWARD DELIVERED hop=${d.hop_index} inner='${d.inner}'`
+                      : d.kind === 'script_accepted'
+                      ? `SCRIPT ACCEPTED opcount=${d.opcount} top=0x${d.top.toString(16)}`
+                      : d.kind === 'script_rejected'
+                      ? `SCRIPT REJECTED rc=${d.rc} opcount=${d.opcount} depth=${d.depth}`
+                      : d.kind === 'actuator_activated'
+                      ? `ACTUATOR ACTIVATED activations=${d.activations} ms_remaining=${d.ms_remaining}`
+                      : d.kind === 'actuator_deactivated'
+                      ? `ACTUATOR DEACTIVATED total=${d.activations}`
+                      : `QUORUM FIRED (${d.blink_ms}ms)`;
+    case 'channel': return d.kind === 'open'    ? `OPEN cap=${d.capacity}`
+                         : d.kind === 'commit'  ? `COMMIT seq=${d.seq} share=${d.device_share} exp=${d.expiry}`
+                         : d.kind === 'expired' ? `EXPIRED seq=${d.seq}`
+                         :                        `CLOSED final_seq=${d.final_seq}`;
+    case 'rule':    return d.kind === 'installed' ? `HOT-SWAP INSTALLED slot=${d.slot}` : 'hot-swap dedup';
+    case 'boot':    return `boot mac=${d.mac}`;
+    case 'role':    return `role=${d.role}`;
+    case 'bench':   return `bench ${(d.per_us/1000).toFixed(0)} ms/verify`;
+    case 'deck':    return `deck loaded`;
+    default:        return JSON.stringify(d);
+  }
+}
+
+function renderEvents() {
+  $events.innerHTML = '';
+  for (const e of EVENTS) {
+    const div = document.createElement('div');
+    div.className = `event ${e.type}`;
+    div.innerHTML = `
+      <span class="ts">${fmtTs(e.ts_ms)}</span>
+      <span class="port">${fmtPort(e.port)}</span>
+      <span class="tag">${e.type}</span>
+      <span class="body">${describeEvent(e)}</span>
+    `;
+    $events.appendChild(div);
+  }
+}
+
+// ── Telemetry: track + metrics ─────────────────────────────────────
+const SPD_COLORS = ['#06b6d4', '#f59e0b', '#a855f7', '#84cc16', '#ef4444', '#3b82f6'];
+
+// World mm → canvas px. Figure-8 spans ~±sizeMm; auto-fit to the largest
+// coordinate seen so the track always fills the canvas.
+let worldHalf = 7000;
+function fitWorld() {
+  let max = 1000;
+  for (const sv of Object.values(SPEEDERS)) {
+    for (const p of [sv.truth, sv.rx]) {
+      if (!p) continue;
+      max = Math.max(max, Math.abs(p.x), Math.abs(p.y));
+    }
+  }
+  worldHalf = worldHalf * 0.9 + (max * 1.15) * 0.1; // smooth
+}
+function wx(x) { return $track.width  / 2 + (x / worldHalf) * ($track.width  / 2 - 20); }
+function wy(y) { return $track.height / 2 - (y / worldHalf) * ($track.height / 2 - 20); }
+
+function drawTrack() {
+  const W = $track.width, H = $track.height;
+  tctx.clearRect(0, 0, W, H);
+  // Axes.
+  tctx.strokeStyle = '#1f1f23'; tctx.lineWidth = 1;
+  tctx.beginPath(); tctx.moveTo(0, H/2); tctx.lineTo(W, H/2);
+  tctx.moveTo(W/2, 0); tctx.lineTo(W/2, H); tctx.stroke();
+
+  const spds = Object.keys(SPEEDERS).map(Number).sort();
+  spds.forEach((spd, i) => {
+    const sv = SPEEDERS[spd];
+    const col = SPD_COLORS[i % SPD_COLORS.length];
+    // Sideline-received pose: hollow ring.
+    if (sv.rx) {
+      tctx.strokeStyle = col; tctx.lineWidth = 2;
+      tctx.beginPath(); tctx.arc(wx(sv.rx.x), wy(sv.rx.y), 9, 0, Math.PI*2); tctx.stroke();
+      if (sv.predicted) { // prediction: dashed halo
+        tctx.setLineDash([3,3]);
+        tctx.beginPath(); tctx.arc(wx(sv.rx.x), wy(sv.rx.y), 14, 0, Math.PI*2); tctx.stroke();
+        tctx.setLineDash([]);
+      }
+    }
+    // Truth pose: solid dot + heading tick.
+    if (sv.truth) {
+      const px = wx(sv.truth.x), py = wy(sv.truth.y);
+      tctx.fillStyle = col;
+      tctx.beginPath(); tctx.arc(px, py, 5, 0, Math.PI*2); tctx.fill();
+      const h = sv.truth.hdg / 1000;
+      tctx.strokeStyle = col; tctx.lineWidth = 2;
+      tctx.beginPath(); tctx.moveTo(px, py);
+      tctx.lineTo(px + Math.cos(h)*14, py - Math.sin(h)*14); tctx.stroke();
+      tctx.fillStyle = '#fafafa'; tctx.font = '11px ui-monospace, monospace';
+      tctx.fillText('S' + spd, px + 8, py - 8);
+    }
+  });
+}
+
+function cls(v, warn, bad) { return v >= bad ? 'bad' : v >= warn ? 'warn' : ''; }
+function num(v, d=1) { return (v == null || Number.isNaN(v)) ? '—' : v.toFixed(d); }
+
+function renderMetrics() {
+  const keys = Object.keys(METRICS).sort();
+  $metrics.innerHTML = '';
+  for (const key of keys) {
+    const m = METRICS[key];
+    const row = document.createElement('div');
+    row.className = 'mrow';
+    row.innerHTML = `
+      <span class="spd">speeder ${m.spd}</span>
+      <span class="port">@ ${m.port}</span>
+      ${m.predicted ? '<span class="pred">in-network predicted</span>' : ''}
+      <div class="mgrid">
+        <div><span class="k">rate</span><span class="v">${num(m.hz)}<small> Hz</small></span></div>
+        <div><span class="k">jitter</span><span class="v ${cls(m.jitterMs,15,30)}">${num(m.jitterMs)}<small> ms</small></span></div>
+        <div><span class="k">latency (above floor)</span><span class="v ${cls(m.latencyMeanMs,20,40)}">${num(m.latencyMeanMs)}<small> ms</small></span></div>
+        <div><span class="k">p99 interval</span><span class="v">${num(m.p99IntervalMs,0)}<small> ms</small></span></div>
+        <div><span class="k">drop</span><span class="v ${cls(m.dropRate*100,2,10)}">${num(m.dropRate*100)}<small> %</small></span></div>
+        <div><span class="k">sideline error${m.predicted ? ' (predicted)' : ''}</span><span class="v ${m.predicted ? '' : cls(m.errMeanMm,200,500)}">${num(m.errMeanMm,0)}<small> mm</small></span></div>
+      </div>`;
+    $metrics.appendChild(row);
+  }
+  $metricsNote.textContent =
+    'Jitter, rate and drop are exact (single receiver clock). "Latency above floor" '
+    + 'assumes the fastest cell in the window had ~0 transport delay — relative, not '
+    + 'absolute. Absolute one-hop latency needs a two-device clock handshake (firmware).';
+}
+
+function render() {
+  const hasTelem = Object.keys(SPEEDERS).length > 0;
+  $trackWrap.style.display = hasTelem ? 'flex' : 'none';
+  renderCards();
+  renderEvents();
+  if (hasTelem) renderMetrics();
+}
+
+// Periodic re-render for LED blink decay + "last event N seconds ago".
+setInterval(renderCards, 250);
+// Smooth track animation independent of event cadence.
+(function loop() { fitWorld(); drawTrack(); requestAnimationFrame(loop); })();
+
+connect();
+</script>
+</body>
+</html>

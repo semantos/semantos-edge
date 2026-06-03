@@ -1,0 +1,19 @@
+{
+  "name": "@semantos/edge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Host-side tools for the semantos-edge IoT kit: mesh telemetry observer and the x402 on-chain device-rental bridge.",
+  "type": "module",
+  "scripts": {
+    "observe": "bun tools/mesh-observer/server.ts",
+    "observe:sim": "bun tools/mesh-observer/server.ts --sim 3",
+    "x402-bridge": "bun tools/x402-bridge/server.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@bsv/sdk": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

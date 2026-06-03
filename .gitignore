@@ -1,0 +1,17 @@
+# ESP-IDF build output
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+
+# Zig
+.zig-cache/
+zig-out/
+
+# Node / Bun (TS tools)
+node_modules/
+bun.lockb
+
+# OS
+.DS_Store
