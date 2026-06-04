@@ -28,7 +28,7 @@
 
 import readline from 'node:readline';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { openSync, writeSync, closeSync } from 'node:fs';
+import { openSync, writeSync, closeSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { PrivateKey, Transaction, Script, P2PKH, ECDSA, BigNumber } from '@bsv/sdk';
 import {
   mintCell, signCell, typeHash, bip143Sighash, ecdsaDer,
@@ -62,6 +62,25 @@ if (fundSats > maxSats) { console.error(`fund-sats ${fundSats} exceeds safety ca
 // ── funding state: a spendable P2PK UTXO ────────────────────────────
 interface Funding { tx: Transaction; vout: number; value: number; key: PrivateKey; }
 let funding: Funding | null = null;
+// Last successfully-built good spend's broadcaster — a manual `settle` fallback
+// for when the serial watch misses the ACCEPT (e.g. the port was contended).
+let lastGood: (() => Promise<string>) | null = null;
+
+// Persist the funded UTXO (incl. spend key) so a crash/restart never strands
+// real sats — on boot we resume it instead of funding a fresh one.
+const STATE_FILE = `${import.meta.dir}/.gated-spend-state.json`;
+function saveFunding(f: Funding): void {
+  if (DRY) return;
+  writeFileSync(STATE_FILE, JSON.stringify({ keyWif: f.key.toWif(), txHex: f.tx.toHex(), vout: f.vout, value: f.value }));
+}
+function loadFunding(): Funding | null {
+  if (DRY || !existsSync(STATE_FILE)) return null;
+  try {
+    const s = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
+    return { tx: Transaction.fromHex(s.txHex), vout: s.vout, value: s.value, key: PrivateKey.fromWif(s.keyWif) };
+  } catch { return null; }
+}
+function clearFunding(): void { funding = null; lastGood = null; try { if (existsSync(STATE_FILE)) unlinkSync(STATE_FILE); } catch {} }
 
 function p2pkLockOf(key: PrivateKey): Uint8Array {
   const pk = new Uint8Array(Buffer.from(key.toPublicKey().toString(), 'hex')); // 33B
@@ -142,6 +161,9 @@ function watch(port: string): void {
   spawnSync('stty', ['-f', port, baud, 'raw', '-echo'], { stdio: 'ignore' });
   const label = port.split('modem')[1] ?? port;
   const c = spawn('cat', [port]) as ChildProcessWithoutNullStreams;
+  c.on('exit', (code) => {
+    if (code && code !== 0) out(`\x1b[31m⚠ watch on ${label} exited (code ${code}) — port busy? verdicts won't be seen; use \`settle\` after a visible ACCEPT.\x1b[0m`);
+  });
   let buf = '';
   c.stdout.on('data', (d: Buffer) => {
     buf += d.toString();
@@ -191,6 +213,7 @@ async function doFund(): Promise<void> {
   const bc = await broadcastTxHex(action.beef ? rawHex : tx.toHex());
   if (!bc.ok) throw new Error(`funding broadcast failed: ${bc.reason}`);
   funding = { tx, vout, value: fundSats, key };
+  saveFunding(funding); // crash-safe: resumable on restart
   out(`\x1b[32mfunded: ${bc.txid}:${vout} = ${fundSats} sats → https://whatsonchain.com/tx/${bc.txid}\x1b[0m`);
   out(`(give it a few seconds to propagate before spending)`);
 }
@@ -198,17 +221,30 @@ async function doFund(): Promise<void> {
 async function doSpend(kind: 'good' | 'bad'): Promise<void> {
   if (!funding) return out('\x1b[31mno funded UTXO — run `fund` first\x1b[0m');
   const { frame, broadcast } = buildGatedSpend(funding, kind === 'bad');
+  if (kind === 'good') lastGood = broadcast; // arm the manual `settle` fallback
   out(kind === 'good'
     ? '\x1b[36m→ injecting a REAL spend; on the engine’s ACCEPT it settles on mainnet\x1b[0m'
     : '\x1b[36m→ injecting a TAMPERED spend; the engine should REJECT it and nothing settles\x1b[0m');
   await injectFrame(frame);
   const accepted = await awaitVerdict();
-  if (!accepted) { out('\x1b[31mengine did not accept — nothing broadcast\x1b[0m'); return; }
+  if (!accepted) {
+    out('\x1b[33mdid not see the engine’s verdict on serial.\x1b[0m');
+    if (kind === 'good') out('\x1b[33mIf board B’s LED lit / it logged SCRIPT ACCEPTED, type `settle` to broadcast.\x1b[0m');
+    return;
+  }
+  if (kind === 'bad') return; // rejected as intended
   if (DRY) { out('\x1b[33m[dry] engine ACCEPTED — would broadcast here (skipped, no real UTXO)\x1b[0m'); return; }
-  out('engine ACCEPTED → releasing the tx to ARC...');
+  await settle();
+}
+
+// Broadcast the last good spend (called on ACCEPT, or manually via `settle`).
+async function settle(): Promise<void> {
+  if (!lastGood) return out('\x1b[31mnothing to settle — run `g` first\x1b[0m');
+  if (DRY) { out('\x1b[33m[dry] would broadcast the last good spend (skipped)\x1b[0m'); return; }
+  out('releasing the tx to ARC...');
   try {
-    const txid = await broadcast();
-    funding = null; // UTXO consumed
+    const txid = await lastGood();
+    clearFunding(); // UTXO consumed
     out(`\x1b[32m*** SETTLED ON MAINNET *** ${txid}\n    https://whatsonchain.com/tx/${txid}\x1b[0m`);
   } catch (e) { out(`\x1b[31mbroadcast failed: ${(e as Error).message}\x1b[0m`); }
 }
@@ -220,6 +256,7 @@ const HELP = `commands:
   fund        ${DRY ? 'fabricate a P2PK UTXO (no chain)' : 'fund + broadcast a real P2PK UTXO via Metanet+ARC'}
   g | good    inject a REAL spend → engine ACCEPT → ${DRY ? '(would) ' : ''}settle on mainnet
   b | bad     inject a TAMPERED spend → engine REJECT → nothing settles
+  settle      broadcast the last good spend (fallback if the watch missed ACCEPT)
   help | quit
 inject → ${injectPort.split('modem')[1] ?? injectPort}   watch → ${watchPort.split('modem')[1] ?? watchPort}   ${DRY ? '[DRY: no broadcast]' : '[LIVE MAINNET]'}`;
 function cleanup(): void { for (const c of readers) c.kill(); rl.close(); process.exit(0); }
@@ -232,6 +269,7 @@ async function handle(line: string): Promise<void> {
     if (cmd === 'fund') return await doFund();
     if (cmd === 'g' || cmd === 'good') return await doSpend('good');
     if (cmd === 'b' || cmd === 'bad')  return await doSpend('bad');
+    if (cmd === 'settle') return await settle();
     out(`unknown: ${cmd} — type 'help'`);
   } catch (e) { out(`\x1b[31merror: ${(e as Error).message}\x1b[0m`); }
 }
@@ -240,6 +278,9 @@ async function handle(line: string): Promise<void> {
 console.log(`onchain gated-spend — ${DRY ? 'DRY (no broadcast)' : 'LIVE MAINNET'} — inject ${injectPort}, watch ${watchPort}`);
 console.log(HELP);
 watch(watchPort);
+// Resume a previously-funded UTXO so a crash/restart never strands real sats.
+funding = loadFunding();
+if (funding) console.log(`\x1b[32mresumed funded UTXO ${funding.tx.id('hex')}:${funding.vout} = ${funding.value} sats — spend with \`g\`\x1b[0m`);
 const runScript = flag('--run');
 if (runScript) {
   (async () => {

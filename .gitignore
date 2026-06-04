@@ -13,5 +13,8 @@ zig-out/
 node_modules/
 bun.lockb
 
+# Holds a spend key (WIF) for an unsettled UTXO — never commit
+.gated-spend-state.json
+
 # OS
 .DS_Store
