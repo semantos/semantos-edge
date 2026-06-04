@@ -8,6 +8,8 @@
     "observe": "bun tools/mesh-observer/server.ts",
     "observe:sim": "bun tools/mesh-observer/server.ts --sim 3",
     "x402-bridge": "bun tools/x402-bridge/server.ts",
+    "vm-demo": "bun tools/x402-bridge/scripted-vm-demo.ts",
+    "vm-demo:dry": "bun tools/x402-bridge/scripted-vm-demo.ts --dry",
     "test": "bun test"
   },
   "dependencies": {
