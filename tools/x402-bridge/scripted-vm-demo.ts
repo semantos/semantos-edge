@@ -37,8 +37,14 @@ import { frameCell } from './serial-mesh.js';
 
 // ── config ───────────────────────────────────────────────────────────
 const flag = (n: string, d?: string) => { const i = process.argv.indexOf(n); return i >= 0 ? process.argv[i + 1] : d; };
-const injectPort = flag('--inject-port', '/dev/cu.usbmodem11201')!; // broadcaster
-const watchPort  = flag('--watch', '/dev/cu.usbmodem11301')!;       // VM runs here, LED here
+// Auto-discover boards so a reset/replug (renames the CDC device) never breaks it.
+function discoverPorts(): string[] {
+  try { return require('node:fs').readdirSync('/dev').filter((f: string) => /^cu\.usbmodem\d+$/.test(f)).map((f: string) => `/dev/${f}`).sort(); }
+  catch { return []; }
+}
+const ports = discoverPorts();
+const injectPort = flag('--inject-port') ?? ports[0] ?? '/dev/cu.usbmodem11201'; // broadcaster
+const watchPort  = flag('--watch') ?? ports[1] ?? ports[0] ?? '/dev/cu.usbmodem11301'; // VM runs here, LED here
 const baud       = flag('--baud', '115200')!;
 const runScript  = flag('--run');                                    // e.g. "good|bad"
 

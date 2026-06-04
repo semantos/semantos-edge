@@ -28,7 +28,7 @@
 
 import readline from 'node:readline';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { openSync, writeSync, closeSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
+import { openSync, writeSync, closeSync, existsSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { PrivateKey, Transaction, Script, P2PKH, ECDSA, BigNumber } from '@bsv/sdk';
 import {
   mintCell, signCell, typeHash, bip143Sighash, ecdsaDer,
@@ -41,8 +41,17 @@ import { broadcastTxHex } from './arc.js';
 // ── config ───────────────────────────────────────────────────────────
 const flag = (n: string, d?: string) => { const i = process.argv.indexOf(n); return i >= 0 ? process.argv[i + 1] : d; };
 const has  = (n: string) => process.argv.includes(n);
-const injectPort = flag('--inject-port', '/dev/cu.usbmodem11201')!;
-const watchPort  = flag('--watch', '/dev/cu.usbmodem11301')!;
+// Auto-discover the boards so a reset/replug (which renames the CDC device on
+// native-USB C6s, e.g. 11201→21201) never breaks the demo. Flags still override.
+function discoverPorts(): string[] {
+  // Numeric-suffix usbmodem only — that's the ESP32 native-USB-CDC pattern;
+  // excludes phones/other gadgets (e.g. cu.usbmodemRF8R…).
+  try { return readdirSync('/dev').filter((f) => /^cu\.usbmodem\d+$/.test(f)).map((f) => `/dev/${f}`).sort(); }
+  catch { return []; }
+}
+const ports = discoverPorts();
+const injectPort = flag('--inject-port') ?? ports[0] ?? '/dev/cu.usbmodem11201';
+const watchPort  = flag('--watch') ?? ports[1] ?? ports[0] ?? '/dev/cu.usbmodem11301';
 const baud       = flag('--baud', '115200')!;
 const fundSats   = parseInt(flag('--fund-sats', '1200')!, 10);
 const feeSats    = parseInt(flag('--fee-sats', '300')!, 10);
@@ -275,7 +284,9 @@ async function handle(line: string): Promise<void> {
 }
 
 // ── boot ─────────────────────────────────────────────────────────────
-console.log(`onchain gated-spend — ${DRY ? 'DRY (no broadcast)' : 'LIVE MAINNET'} — inject ${injectPort}, watch ${watchPort}`);
+console.log(`onchain gated-spend — ${DRY ? 'DRY (no broadcast)' : 'LIVE MAINNET'}`);
+console.log(`discovered ${ports.length} board(s): ${ports.join(', ') || '(none)'}`);
+if (ports.length < 2 && !DRY) console.log('\x1b[33m⚠ fewer than 2 boards found — pass --inject-port/--watch if needed\x1b[0m');
 console.log(HELP);
 watch(watchPort);
 // Resume a previously-funded UTXO so a crash/restart never strands real sats.
