@@ -1395,7 +1395,7 @@ static void on_radio_recv(const uint8_t sender_mac[6],
     // Same dispatch pattern as scripted: enqueue payload, drain runs
     // engine on main pthread, on accept extend the LED-active window.
     if (is_actuator_activate) {
-        if (!s_is_destination) return;
+        if (!DEMO_SCRIPT_ONLY && !s_is_destination) return; // demo: any board is the rentable actuator
         const uint8_t *payload = cm_payload(cell);
         uint32_t       ptot    = cm_payload_total(cell);
         if (s_pending_actuator) {
@@ -3007,8 +3007,8 @@ static void *mesh_demo_thread(void *arg) {
             s_inject_ack_start_us = 0;                    // pattern complete
         }
 #endif
-        if (s_is_destination && now_us < s_actuator_active_until_us) {
-            led_should_be_on = true;
+        if ((DEMO_SCRIPT_ONLY || s_is_destination) && now_us < s_actuator_active_until_us) {
+            led_should_be_on = true; // demo: any board lights its own actuator on a valid activation
         } else if (s_is_destination && s_channel.state == CM_CHAN_ACTIVE && meter_authorized) {
             led_should_be_on = true;
         } else if (now_us < s_blink_until_us) {
@@ -3017,7 +3017,7 @@ static void *mesh_demo_thread(void *arg) {
         if (led_should_be_on) led_on(); else led_off();
 
         // Edge-detect actuator window expiration for a clear log.
-        if (s_is_destination && s_actuator_active_until_us != 0
+        if ((DEMO_SCRIPT_ONLY || s_is_destination) && s_actuator_active_until_us != 0
             && now_us >= s_actuator_active_until_us) {
             ESP_LOGI(TAG, "*** ACTUATOR DEACTIVATED *** activations=%u",
                      (unsigned)s_actuator_activations);
