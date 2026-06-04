@@ -10,6 +10,8 @@
     "x402-bridge": "bun tools/x402-bridge/server.ts",
     "vm-demo": "bun tools/x402-bridge/scripted-vm-demo.ts",
     "vm-demo:dry": "bun tools/x402-bridge/scripted-vm-demo.ts --dry",
+    "gated-spend": "bun tools/x402-bridge/onchain-gated-spend.ts",
+    "gated-spend:dry": "bun tools/x402-bridge/onchain-gated-spend.ts --dry",
     "test": "bun test"
   },
   "dependencies": {
