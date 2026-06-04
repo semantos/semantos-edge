@@ -144,7 +144,7 @@ static cm_mnca_quorum_t s_mnca_quorum;
 // that validates transactions on a server is sitting on a $4 chip,
 // gating IoT behavior.
 static semantos_t *s_engine = NULL;
-#define SCRIPTED_BLINK_MS 600u
+#define SCRIPTED_BLINK_MS 5000u
 
 // ── Capability cert table ────────────────────────────────────────────
 // Stores up to CM_CAP_TABLE_MAX=4 per-channel relay-key grants.
