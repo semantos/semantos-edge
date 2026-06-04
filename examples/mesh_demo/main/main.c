@@ -1463,7 +1463,7 @@ static void on_radio_recv(const uint8_t sender_mac[6],
     // Channel cells DO NOT enter the rules engine — return early to
     // skip the ring push + rules eval (keeps quorum counters clean).
     if (is_channel_open || is_channel_commitment || is_channel_close) {
-        if (!s_is_destination) return;
+        if (!DEMO_SCRIPT_ONLY && !s_is_destination) return; // demo: any board runs the metered channel
         const uint8_t *payload = cm_payload(cell);
         uint32_t       ptot    = cm_payload_total(cell);
 
@@ -1482,6 +1482,8 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                 return;
             }
             s_channel_base_ms = now_ms;
+            cm_meter_init(&s_meter, CM_METER_RATE_MSAT_PER_SEC); // fresh meter per channel (don't carry consumed across sessions)
+            s_meter_cut = false;
             ESP_LOGI(TAG, "*** CHANNEL OPEN *** capacity=%u locktime=%llu ms (state=OPEN)",
                      (unsigned)op.total_capacity,
                      (unsigned long long)op.initial_locktime_ms);
@@ -2946,7 +2948,7 @@ static void *mesh_demo_thread(void *arg) {
         // module transitions ACTIVE → EXPIRED when relative_now > expiry_ms;
         // the meter independently accrues consumed value while ACTIVE.
         bool meter_authorized = true;
-        if (s_is_destination && s_channel.state == CM_CHAN_ACTIVE) {
+        if ((DEMO_SCRIPT_ONLY || s_is_destination) && s_channel.state == CM_CHAN_ACTIVE) {
             uint64_t now_ms      = (uint64_t)esp_log_timestamp();
             uint64_t relative_now = (now_ms > s_channel_base_ms)
                                   ? (now_ms - s_channel_base_ms) : 0;
@@ -3009,7 +3011,7 @@ static void *mesh_demo_thread(void *arg) {
 #endif
         if ((DEMO_SCRIPT_ONLY || s_is_destination) && now_us < s_actuator_active_until_us) {
             led_should_be_on = true; // demo: any board lights its own actuator on a valid activation
-        } else if (s_is_destination && s_channel.state == CM_CHAN_ACTIVE && meter_authorized) {
+        } else if ((DEMO_SCRIPT_ONLY || s_is_destination) && s_channel.state == CM_CHAN_ACTIVE && meter_authorized) {
             led_should_be_on = true;
         } else if (now_us < s_blink_until_us) {
             led_should_be_on = true;

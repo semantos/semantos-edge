@@ -13,6 +13,7 @@
     "gated-spend": "bun tools/x402-bridge/onchain-gated-spend.ts",
     "gated-spend:dry": "bun tools/x402-bridge/onchain-gated-spend.ts --dry",
     "actuator-demo": "bun tools/x402-bridge/actuator-demo.ts",
+    "metered-rental": "bun tools/x402-bridge/metered-rental.ts",
     "test": "bun test"
   },
   "dependencies": {
