@@ -122,19 +122,17 @@ function buildFrame(tamper: boolean): Buffer {
   return Buffer.from(frameCell(cell, sig));
 }
 
-// ── inject: paced write + one retry for best-effort RF ──────────────
+// ── inject: one paced write over USB serial (reliable; no RF retry —
+// the firmware stages a single broadcast and acks with a 3-pulse blink) ──
 async function injectFrame(frame: Buffer): Promise<void> {
-  for (let r = 0; r < 2; r++) {
-    const fd = openSync(injectPort, 'w');
-    try {
-      for (let o = 0; o < frame.length; o += 256) {
-        writeSync(fd, frame, o, Math.min(256, frame.length - o));
-        await sleep(2);
-      }
-    } finally {
-      closeSync(fd);
+  const fd = openSync(injectPort, 'w');
+  try {
+    for (let o = 0; o < frame.length; o += 256) {
+      writeSync(fd, frame, o, Math.min(256, frame.length - o));
+      await sleep(2);
     }
-    await sleep(250);
+  } finally {
+    closeSync(fd);
   }
 }
 

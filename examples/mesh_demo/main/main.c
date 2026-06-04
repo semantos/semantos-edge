@@ -146,6 +146,19 @@ static cm_mnca_quorum_t s_mnca_quorum;
 static semantos_t *s_engine = NULL;
 #define SCRIPTED_BLINK_MS 5000u
 
+// ── Demo choreography ───────────────────────────────────────────────
+// DEMO_SCRIPT_ONLY=1 turns mesh_demo into a clean single-purpose stage for
+// the cell-engine demo: every background broadcaster (heartbeat, telemetry,
+// tap, mnca, forward, channel, actuator) is silenced so the boards sit dark
+// until a script is injected. The board that receives a serial inject pulses
+// its LED 3× ("got it from the laptop"), waits DEMO_BROADCAST_DELAY_MS, then
+// broadcasts; the receiving board runs the script through the cell-engine and
+// holds its LED solid for SCRIPTED_BLINK_MS on ACCEPT. The deliberate gaps
+// make the laptop → A → (air) → B causal chain watchable.
+// Set to 0 to restore the full mesh demo (telemetry / forwarding / channels).
+#define DEMO_SCRIPT_ONLY        1
+#define DEMO_BROADCAST_DELAY_MS 1800u   // gap between A's ack-blink and its broadcast
+
 // ── Capability cert table ────────────────────────────────────────────
 // Stores up to CM_CAP_TABLE_MAX=4 per-channel relay-key grants.
 // Populated by incoming cellmesh.capability.v0 cells signed by the
@@ -301,6 +314,14 @@ static uint32_t   s_rx_counter           = 0;
 // the receive callback writes only on rule-fire. Word writes are
 // atomic on RISC-V — no mutex needed at this scale.
 static volatile uint64_t s_blink_until_us = 0;
+#if DEMO_SCRIPT_ONLY
+// Demo choreography state (see DEMO_SCRIPT_ONLY above).
+static volatile uint64_t s_inject_ack_start_us  = 0;     // A's 3-pulse ack in progress (0 = idle)
+static volatile bool     s_demo_pending         = false; // a cell staged for delayed broadcast
+static          uint64_t s_demo_broadcast_at_us = 0;
+static          uint8_t  s_demo_cell[CM_CELL_SIZE];
+static          uint8_t  s_demo_sig[CM_FRAME_SIG_SIZE];
+#endif
 
 // Pending-emit signal — when a rule's CM_EFFECT_EMIT fires (for the
 // confirmed_tap type), the receive callback raises this; the main loop
@@ -1573,6 +1594,7 @@ static void on_radio_recv(const uint8_t sender_mac[6],
 // cm_radio_send_cell fragments + may write into the buffer (and flash
 // reads should be linear in any case for predictable latency).
 static void broadcast_heartbeat(void) {
+    if (DEMO_SCRIPT_ONLY) return;        // demo: dark stage, no background radio
     const uint8_t *cell_flash, *sig_flash;
     if (!deck_pop(&s_q_heartbeat, "heartbeat", &cell_flash, &sig_flash)) return;
 
@@ -1593,6 +1615,7 @@ static void broadcast_heartbeat(void) {
 // the rule definition is locked at provisioning time; to swap a
 // different rule, regenerate the deck.
 static void broadcast_hot_swap_rule(void) {
+    if (DEMO_SCRIPT_ONLY) return;        // demo: dark stage, no background radio
     const uint8_t *cell_flash, *sig_flash;
     if (!deck_pop(&s_q_hot_swap, "hot_swap", &cell_flash, &sig_flash)) return;
 
@@ -1629,6 +1652,7 @@ static void broadcast_hot_swap_rule(void) {
 }
 
 static void broadcast_tap(void) {
+    if (DEMO_SCRIPT_ONLY) return;        // demo: dark stage, no background radio
     const uint8_t *cell_flash, *sig_flash;
     if (!deck_pop(&s_q_tap, "tap", &cell_flash, &sig_flash)) return;
 
@@ -1685,6 +1709,7 @@ static int build_forward_cell(const cm_forward_t *fwd,
 // with the current flow counter so the destination's log line is
 // distinguishable across multiple test runs.
 static void broadcast_forward_route(void) {
+    if (DEMO_SCRIPT_ONLY) return;        // demo: dark stage, no background radio
     cm_forward_t fwd = {0};
     // flow_id: timestamp-derived + tx counter — enough for visual debug.
     uint64_t ts = (uint64_t)esp_log_timestamp();
@@ -1745,6 +1770,7 @@ static void telem_pose(uint64_t now_us, int32_t *x, int32_t *y,
 // Builds + broadcasts one unsigned pose cell. Payload layout (little-endian,
 // 28 bytes): seq u32, spd u32, x i32, y i32, hdg i32, v i32, tx_us u32.
 static void broadcast_telem(uint64_t now_us) {
+    if (DEMO_SCRIPT_ONLY) return;        // demo: dark stage, no background radio
     int32_t x, y, hdg, v;
     telem_pose(now_us, &x, &y, &hdg, &v);
     uint32_t tx_us = (uint32_t)now_us;   // wraps ~71 min; consumers use deltas
@@ -1838,6 +1864,7 @@ static void emit_mnca_settle(const cm_mnca_tile_t *t, const uint8_t tile_hash[32
 }
 
 static void broadcast_mnca_tile(void) {
+    if (DEMO_SCRIPT_ONLY) return;        // demo: dark stage, no background radio
     // Advance one generation (double-buffered: cur → next).
     cm_mnca_tile_t next;
     cm_mnca_step(&s_mnca_tile, &next, &CM_MNCA_DEFAULT_RULE);
@@ -1899,6 +1926,7 @@ static void broadcast_mnca_tile(void) {
 // Returns true if a cell was sent this tick (caller can skip other TX
 // to avoid bunching).
 static bool channel_tx_tick(uint64_t now_us) {
+    if (DEMO_SCRIPT_ONLY) return false;  // demo: dark stage, no background radio
     if (!s_channel_tx_started) return false;
     if (now_us < s_channel_tx_next_us) return false;
     if (s_channel_tx_step > CHANNEL_TX_COMMITMENT_COUNT + 1) return false;
@@ -1983,6 +2011,7 @@ static void drain_pending_script(void) {
 // BSV-script bytecode in its payload — devices receiving it run it
 // through the cell-engine and blink on accept.
 static bool scripted_tx_tick(uint64_t now_us) {
+    if (DEMO_SCRIPT_ONLY) return false;  // demo: dark stage, no background radio
     if (!s_scripted_tx_started || s_scripted_tx_done) return false;
     if (now_us < s_scripted_tx_next_us) return false;
 
@@ -2013,6 +2042,7 @@ static bool scripted_tx_tick(uint64_t now_us) {
 //   - actuator_activate_tx_tick: device A (wallet) broadcasts
 //                                 BIP-143-signed activations
 static bool actuator_offer_tx_tick(uint64_t now_us) {
+    if (DEMO_SCRIPT_ONLY) return false;  // demo: dark stage, no background radio
     if (!s_actuator_offer_started || s_actuator_offer_done) return false;
     if (now_us < s_actuator_offer_next_us) return false;
     const uint8_t *cell_flash, *sig_flash;
@@ -2032,6 +2062,7 @@ static bool actuator_offer_tx_tick(uint64_t now_us) {
 }
 
 static bool actuator_activate_tx_tick(uint64_t now_us) {
+    if (DEMO_SCRIPT_ONLY) return false;  // demo: dark stage, no background radio
     if (!s_actuator_activate_started || s_actuator_activate_done) return false;
     if (now_us < s_actuator_activate_next_us) return false;
     const uint8_t *cell_flash, *sig_flash;
@@ -2423,10 +2454,24 @@ static void inject_process_line(const char *line, size_t len) {
     }
     memcpy(s_inject_cell, s_inject_decoded, CM_CELL_SIZE);
     memcpy(s_inject_sig,  s_inject_decoded + CM_CELL_SIZE, CM_FRAME_SIG_SIZE);
+#if DEMO_SCRIPT_ONLY
+    // Demo: don't broadcast straight away. Acknowledge "received from the
+    // laptop" with a 3-pulse LED blink, stage the cell, and let the main
+    // loop broadcast it after DEMO_BROADCAST_DELAY_MS — so the laptop → A →
+    // (air) → B chain plays out as a watchable sequence rather than instantly.
+    memcpy(s_demo_cell, s_inject_cell, CM_CELL_SIZE);
+    memcpy(s_demo_sig,  s_inject_sig,  CM_FRAME_SIG_SIZE);
+    s_inject_ack_start_us  = esp_timer_get_time();
+    s_demo_broadcast_at_us = s_inject_ack_start_us + (uint64_t)DEMO_BROADCAST_DELAY_MS * 1000ULL;
+    s_demo_pending = true;
+    ESP_LOGI(TAG, "*** CELL INJECTED *** (demo: ack-blink x3, broadcast in %ums) crc=0x%08x",
+             (unsigned)DEMO_BROADCAST_DELAY_MS, (unsigned)got);
+#else
     uint32_t cell_id = (uint32_t)esp_random();
     esp_err_t e = cm_radio_send_cell(s_inject_cell, s_inject_sig, cell_id);
     ESP_LOGI(TAG, "*** CELL INJECTED *** broadcast cell_id=0x%08x rc=%d crc=0x%08x (from x402 bridge)",
              (unsigned)cell_id, (int)e, (unsigned)got);
+#endif
 }
 
 static void serial_inject_task(void *arg) {
@@ -2784,6 +2829,18 @@ static void *mesh_demo_thread(void *arg) {
     while (1) {
         uint64_t now_us = esp_timer_get_time();
 
+#if DEMO_SCRIPT_ONLY
+        // Demo: fire the staged inject broadcast once the post-ack delay has
+        // elapsed. This is the A → (air) → B hop the audience is watching for.
+        if (s_demo_pending && now_us >= s_demo_broadcast_at_us) {
+            s_demo_pending = false;
+            uint32_t cell_id = (uint32_t)esp_random();
+            esp_err_t e = cm_radio_send_cell(s_demo_cell, s_demo_sig, cell_id);
+            ESP_LOGI(TAG, "*** CELL BROADCAST *** (demo: A->air->B) cell_id=0x%08x rc=%d",
+                     (unsigned)cell_id, (int)e);
+        }
+#endif
+
         // Periodic heartbeat (no effect on receive; just confirms radio).
         if (now_us - last_heartbeat_us > HEARTBEAT_PERIOD_US) {
             broadcast_heartbeat();
@@ -2934,6 +2991,22 @@ static void *mesh_demo_thread(void *arg) {
         //   3. Any device with blink-until set → on for the remainder
         //   4. otherwise → off
         bool led_should_be_on = false;
+#if DEMO_SCRIPT_ONLY
+        // Inject-ack (highest priority): the board that received a serial
+        // inject from the laptop pulses its LED 3× (250 ms on / 250 ms off)
+        // to say "got it". Drives the LED directly and skips the rest of the
+        // LED logic for this tick.
+        if (s_inject_ack_start_us != 0) {
+            uint64_t dt = now_us - s_inject_ack_start_us;
+            const uint64_t PULSE = 250000ULL;            // 250 ms per phase
+            if (dt < 6ULL * PULSE) {                      // on,off,on,off,on,off
+                if (((dt / PULSE) % 2ULL) == 0ULL) led_on(); else led_off();
+                vTaskDelay(pdMS_TO_TICKS(20));            // ~50 Hz for crisp pulses
+                continue;
+            }
+            s_inject_ack_start_us = 0;                    // pattern complete
+        }
+#endif
         if (s_is_destination && now_us < s_actuator_active_until_us) {
             led_should_be_on = true;
         } else if (s_is_destination && s_channel.state == CM_CHAN_ACTIVE && meter_authorized) {
