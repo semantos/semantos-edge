@@ -11,10 +11,6 @@
   "scripts": {
     "observe": "bun tools/mesh-observer/server.ts",
     "observe:sim": "bun tools/mesh-observer/server.ts --sim 3",
-    "bitpiggy:deck": "bun tools/sign-bitpiggy-cell-deck.ts examples/bitpiggy_mesh/main/embed/cell_deck.bin",
-    "bitpiggy:deck:lilygo": "bun tools/sign-bitpiggy-cell-deck.ts examples/bitpiggy_mesh/main/embed/cell_deck.bin --mac 50:78:7d:2c:b9:c0 --name LilyGO-S3 --child Theo --chore \"Bins out\"",
-    "bitpiggy:bridge": "bun tools/bitpiggy-bridge/server.ts",
-    "bitpiggy:bridge:dry": "bun tools/bitpiggy-bridge/server.ts --no-serial",
     "x402-bridge": "bun tools/x402-bridge/server.ts",
     "x402-bridge:mainnet": "bun tools/x402-bridge/server.ts --real-payment",
     "vm-demo": "bun tools/x402-bridge/scripted-vm-demo.ts",
