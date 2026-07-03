@@ -1,32 +1,36 @@
 # Host Imports
 
-The cell-engine embedded WASM module declares **ten imports** in the
-`"host"` namespace. The hack-kit provides concrete implementations for
-all ten — you should not need to touch these unless you want to replace
-mbedTLS, add a tighter RTC source, or hook up higher-octave cell
-storage.
+The current cell-engine embedded WASM module declares **twelve imports** in the
+`"host"` namespace. The edge kit binds all twelve so the core blob can
+instantiate on ESP32-C6. Some imports are intentionally fail-closed stubs until
+an app wires storage or signing policy.
 
 Source of truth: `packages/cell-engine/src/host.zig` in the main
 Semantos repo. If the main-repo list changes and this table drifts,
 `host.zig` wins.
 
-## The five crypto imports
+## Crypto imports
 
-All five are backed by mbedTLS in `host_crypto_mbedtls.c`. ESP-IDF ships
-mbedTLS so there's no additional dependency to install.
+Hashes and signature verification are backed by mbedTLS in
+`host_crypto_mbedtls.c`. ESP-IDF ships mbedTLS so there's no additional
+dependency to install.
 
 | Symbol | Signature | Implementation |
 | --- | --- | --- |
 | `host_sha256` | `(data_ptr, data_len, out_ptr)` → `void` | `mbedtls_sha256` |
 | `host_hash160` | `(data_ptr, data_len, out_ptr)` → `void` | SHA-256 then RIPEMD-160 |
 | `host_hash256` | `(data_ptr, data_len, out_ptr)` → `void` | Double SHA-256 |
-| `host_checksig` | `(pk, pk_len, msg, msg_len, sig, sig_len)` → `u32` | `mbedtls_ecdsa_read_signature` over secp256k1 |
-| `host_checkmultisig` | `(pks, pks_count, sigs, sigs_count, msg, msg_len, threshold)` → `u32` | Walks keys in order; calls `host_checksig` per sig |
+| `host_ripemd160` | `(data_ptr, data_len, out_ptr)` → `void` | `mbedtls_ripemd160` |
+| `host_sha1` | `(data_ptr, data_len, out_ptr)` → `void` | `mbedtls_sha1` |
+| `host_checksig` | `(pk, pk_len, msg, msg_len, sig, sig_len)` → `u32` | DER parse plus `mbedtls_ecdsa_verify` over secp256k1 |
+| `host_sign` | `(sk, sk_len, msg, msg_len, out, out_buf_len, out_len)` → `u32` | Fail-closed by default; keep wallet-tier keys off-device |
 
 Output sizes:
 - `host_sha256` → 32 bytes
 - `host_hash160` → 20 bytes (SHA-256 then RIPEMD-160)
 - `host_hash256` → 32 bytes (double SHA-256)
+- `host_ripemd160` → 20 bytes
+- `host_sha1` → 20 bytes
 
 ### `checksig` notes
 
@@ -34,18 +38,17 @@ The embedded profile of the kernel hands `host_checksig` a pre-hashed
 32-byte sighash. If `msg_len` is not 32 we re-hash with SHA-256 as a
 fallback. Public keys are parsed with `mbedtls_ecp_point_read_binary`
 in SEC format (33 bytes compressed or 65 bytes uncompressed).
-Signatures are parsed with `mbedtls_ecdsa_read_signature`, which
-expects DER encoding without a trailing sighash type byte (strip it
-before calling if you're parsing full Bitcoin sigs).
+Signatures are parsed as DER and verified without a trailing sighash type byte
+(strip it before calling if you're parsing full Bitcoin sigs).
 
-### `checkmultisig` notes
+### `host_sign` notes
 
-The packing format of the keys and signatures is
-`[len_byte][data...]` repeated. Each sig is matched against successive
-keys until one verifies; we fail fast if remaining keys cannot satisfy
-the threshold. This follows standard Bitcoin Script multisig semantics.
+The default edge kit returns 0 and writes `out_len = 0`. That is deliberate:
+the examples provision and broadcast pre-signed cells so ESP32 devices verify
+and route without holding wallet-tier private keys. Apps that intentionally keep
+keys on-device can replace `semantos_host_sign`.
 
-## The three utility imports
+## Utility imports
 
 | Symbol | Signature | Implementation |
 | --- | --- | --- |
@@ -106,15 +109,28 @@ only ever holds 1 KB "octave-0" cells directly; larger cells live in
 host-provided higher octaves, and the kernel calls `host_fetch_cell`
 to page in a 1 KB window at `(octave, slot, offset)`.
 
-The hack-kit stubs this out: it always returns 0 (failure). Scripts
+The edge kit stubs this out: it always returns 0 (failure). Scripts
 that only touch octave-0 cells will work fine. If your hack needs
 bigger cells, implement this against SPIFFS, LittleFS, or an SD card.
 `out_ptr` is a pointer into WASM linear memory — write exactly 1024
 bytes to it on success.
 
+## Cursor imports
+
+| Symbol | Signature | Implementation |
+| --- | --- | --- |
+| `hostDbOpenCursor` | `(filter_ptr, filter_len)` → `u32` | Fail-closed stub, returns 0 |
+| `hostDbCursorPull` | `(cursor_id, out_ptr)` → `u32` | Fail-closed stub, returns 0 |
+| `hostDbCursorClose` | `(cursor_id)` → `void` | No-op |
+
+These imports support core's streaming cell-store scan path. The public edge
+kit binds them so the module loads, but leaves storage policy to the app. Wire
+them to NVS, SPIFFS, LittleFS, SD, or an external gateway when an example needs
+local cell-store iteration.
+
 ## Why these aren't adapters
 
-The ten host imports are "primitives the kernel cannot live without" —
+Host imports are "primitives the kernel cannot live without" —
 they're wired at module instantiation time and their signatures are
 fixed by the embedded-profile ABI. The four adapter patterns are
 "things the kernel delegates to host policy" — they're wired via a

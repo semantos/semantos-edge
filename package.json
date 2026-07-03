@@ -1,19 +1,33 @@
 {
-  "name": "@semantos/edge",
+  "name": "@semantos/edge-kit",
   "version": "0.1.0",
-  "private": true,
-  "description": "Host-side tools for the semantos-edge IoT kit: mesh telemetry observer and the x402 on-chain device-rental bridge.",
+  "description": "Host-side tools for the semantos-edge-kit IoT distribution: mesh telemetry observer and the x402 on-chain device-rental bridge.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/semantos/semantos-edge.git"
+  },
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "observe": "bun tools/mesh-observer/server.ts",
     "observe:sim": "bun tools/mesh-observer/server.ts --sim 3",
+    "bitpiggy:deck": "bun tools/sign-bitpiggy-cell-deck.ts examples/bitpiggy_mesh/main/embed/cell_deck.bin",
+    "bitpiggy:deck:lilygo": "bun tools/sign-bitpiggy-cell-deck.ts examples/bitpiggy_mesh/main/embed/cell_deck.bin --mac 50:78:7d:2c:b9:c0 --name LilyGO-S3 --child Theo --chore \"Bins out\"",
+    "bitpiggy:bridge": "bun tools/bitpiggy-bridge/server.ts",
+    "bitpiggy:bridge:dry": "bun tools/bitpiggy-bridge/server.ts --no-serial",
     "x402-bridge": "bun tools/x402-bridge/server.ts",
+    "x402-bridge:mainnet": "bun tools/x402-bridge/server.ts --real-payment",
     "vm-demo": "bun tools/x402-bridge/scripted-vm-demo.ts",
     "vm-demo:dry": "bun tools/x402-bridge/scripted-vm-demo.ts --dry",
-    "gated-spend": "bun tools/x402-bridge/onchain-gated-spend.ts",
-    "gated-spend:dry": "bun tools/x402-bridge/onchain-gated-spend.ts --dry",
+    "gated-spend": "bun tools/x402-bridge/onchain-gated-spend.ts --dry",
+    "gated-spend:mainnet": "bun tools/x402-bridge/onchain-gated-spend.ts --live",
     "actuator-demo": "bun tools/x402-bridge/actuator-demo.ts",
+    "actuator-demo:mainnet": "bun tools/x402-bridge/actuator-demo.ts --real-payment",
     "metered-rental": "bun tools/x402-bridge/metered-rental.ts",
+    "metered-rental:mainnet": "bun tools/x402-bridge/metered-rental.ts --settle",
+    "opcode:parity": "bun tools/check-opcode-parity.ts",
+    "zig:test": "cd components/cell-mesh-zig && zig build test",
+    "zig:test:c-abi": "components/cell-mesh-zig/run-c-abi-tests.sh",
     "test": "bun test"
   },
   "dependencies": {

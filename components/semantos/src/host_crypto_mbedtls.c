@@ -1,10 +1,9 @@
-// host_crypto_mbedtls.c — concrete implementation of the five crypto host
-// imports (sha256, hash160, hash256, checksig, checkmultisig) backed by
-// the mbedTLS component that ships with ESP-IDF.
+// host_crypto_mbedtls.c — concrete implementation of the crypto host imports
+// backed by the mbedTLS component that ships with ESP-IDF.
 //
 // The cell-engine embedded WASM blob declares these as extern "host"
 // functions (see packages/cell-engine/src/host.zig). The runtime backend
-// (wasm3 or WAMR) binds them to the wrappers defined here.
+// (WAMR in the public edge kit) binds them to the wrappers defined here.
 //
 // Note on sizes: SHA-256 output is 32 bytes, RIPEMD160 output is 20 bytes,
 // HASH160 output is 20 bytes (SHA-256 → RIPEMD-160), HASH256 output is
@@ -15,6 +14,7 @@
 #include "sdkconfig.h"
 
 #include "mbedtls/sha256.h"
+#include "mbedtls/sha1.h"
 #include "mbedtls/ripemd160.h"
 #include "mbedtls/ecdsa.h"
 #include "mbedtls/ecp.h"
@@ -79,6 +79,16 @@ void semantos_host_hash160(const uint8_t *data, uint32_t data_len, uint8_t *out2
     mbedtls_ripemd160(sha_out, sizeof(sha_out), out20);
 }
 
+void semantos_host_ripemd160(const uint8_t *data, uint32_t data_len, uint8_t *out20) {
+    CRYPTO_TRACE("ripemd160 len=%u", (unsigned)data_len);
+    mbedtls_ripemd160(data, data_len, out20);
+}
+
+void semantos_host_sha1(const uint8_t *data, uint32_t data_len, uint8_t *out20) {
+    CRYPTO_TRACE("sha1 len=%u", (unsigned)data_len);
+    mbedtls_sha1(data, data_len, out20);
+}
+
 // ── checksig ────────────────────────────────────────────────────────────
 //
 // Verify a Bitcoin-style ECDSA signature over `msg` using a secp256k1
@@ -87,7 +97,7 @@ void semantos_host_hash160(const uint8_t *data, uint32_t data_len, uint8_t *out2
 // is stripped by the caller before reaching the kernel — we assume a
 // clean DER signature here).
 //
-// For the hack-kit we keep this simple: any key or signature we cannot
+// For the edge kit we keep this simple: any key or signature we cannot
 // parse returns 0 (verification failed). Feel free to flesh out the error
 // propagation if you care.
 
@@ -208,7 +218,7 @@ uint32_t semantos_host_checkmultisig(const uint8_t *pks, uint32_t pks_count,
     if (threshold == 0) return 1;
     if (sigs_count < threshold) return 0;
 
-    // For the hack-kit we bound things loosely; the kernel would be a
+    // For the edge kit we bound things loosely; the kernel would be a
     // better place to enforce tight limits.
     const uint8_t *pk_cursor  = pks;
     const uint8_t *pk_end     = pks  + (pks_count  * 72);   /* upper bound */
@@ -239,4 +249,21 @@ uint32_t semantos_host_checkmultisig(const uint8_t *pks, uint32_t pks_count,
     }
 
     return verified >= threshold ? 1 : 0;
+}
+
+uint32_t semantos_host_sign(const uint8_t *sk, uint32_t sk_len,
+                            const uint8_t *msg, uint32_t msg_len,
+                            uint8_t *out, uint32_t out_buf_len,
+                            uint32_t *out_len) {
+    (void)sk;
+    (void)sk_len;
+    (void)msg;
+    (void)msg_len;
+    (void)out;
+    (void)out_buf_len;
+    if (out_len) *out_len = 0;
+    // Edge devices should verify/broadcast pre-signed cells by default, not
+    // hold wallet-tier private keys. Apps that intentionally keep keys on the
+    // device can replace this fail-closed stub.
+    return 0;
 }

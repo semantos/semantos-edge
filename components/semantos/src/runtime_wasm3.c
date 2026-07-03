@@ -1,17 +1,15 @@
-// runtime_wasm3.c — wasm3-backed runtime for the Semantos cell-engine.
+// runtime_wasm3.c — archived wasm3-backed runtime for the Semantos cell-engine.
 //
-// wasm3 is the smaller option: roughly 64KB of code for the interpreter,
-// no PSRAM requirement, and it runs happily on the original ESP32 as well
-// as ESP32-S2/S3/C3. It's the default runtime choice for the hack-kit.
+// wasm3 was the smaller option during early bring-up. The public edge kit is
+// WAMR-only, and this file is retained as a reference port rather than being
+// compiled by components/semantos/CMakeLists.txt.
 //
 // Each host import declared in packages/cell-engine/src/host.zig is
 // bound here via m3_LinkRawFunction. The "host" namespace must match the
 // extern "host" declarations in host.zig exactly, or m3_LinkRawFunction
 // will fail to find the import and the module will refuse to instantiate.
 //
-// NOTE: This file is only compiled when CONFIG_SEMANTOS_RUNTIME_WASM3 is
-// selected. The wasm3 component (espressif/wasm3) must be added to the
-// application's idf_component.yml.
+// NOTE: this file is not compiled in the public edge kit.
 
 #include "semantos_internal.h"
 #include "sdkconfig.h"
@@ -73,6 +71,22 @@ m3ApiRawFunction(trampoline_host_hash256) {
     m3ApiSuccess();
 }
 
+m3ApiRawFunction(trampoline_host_ripemd160) {
+    m3ApiGetArgMem(const uint8_t *, data_ptr);
+    m3ApiGetArg   (uint32_t,        data_len);
+    m3ApiGetArgMem(uint8_t *,       out_ptr);
+    semantos_host_ripemd160(data_ptr, data_len, out_ptr);
+    m3ApiSuccess();
+}
+
+m3ApiRawFunction(trampoline_host_sha1) {
+    m3ApiGetArgMem(const uint8_t *, data_ptr);
+    m3ApiGetArg   (uint32_t,        data_len);
+    m3ApiGetArgMem(uint8_t *,       out_ptr);
+    semantos_host_sha1(data_ptr, data_len, out_ptr);
+    m3ApiSuccess();
+}
+
 m3ApiRawFunction(trampoline_host_checksig) {
     m3ApiReturnType(uint32_t);
     m3ApiGetArgMem(const uint8_t *, pk_ptr);
@@ -95,6 +109,19 @@ m3ApiRawFunction(trampoline_host_checkmultisig) {
     m3ApiGetArg   (uint32_t,        threshold);
     m3ApiReturn(semantos_host_checkmultisig(pks_ptr, pks_count, sigs_ptr, sigs_count,
                                             msg_ptr, msg_len, threshold));
+}
+
+m3ApiRawFunction(trampoline_host_sign) {
+    m3ApiReturnType(uint32_t);
+    m3ApiGetArgMem(const uint8_t *, sk_ptr);
+    m3ApiGetArg   (uint32_t,        sk_len);
+    m3ApiGetArgMem(const uint8_t *, msg_ptr);
+    m3ApiGetArg   (uint32_t,        msg_len);
+    m3ApiGetArgMem(uint8_t *,       out_ptr);
+    m3ApiGetArg   (uint32_t,        out_buf_len);
+    m3ApiGetArgMem(uint32_t *,      out_len_ptr);
+    m3ApiReturn(semantos_host_sign(sk_ptr, sk_len, msg_ptr, msg_len,
+                                   out_ptr, out_buf_len, out_len_ptr));
 }
 
 m3ApiRawFunction(trampoline_host_get_blocktime) {
@@ -130,6 +157,26 @@ m3ApiRawFunction(trampoline_host_fetch_cell) {
     m3ApiReturn(semantos_host_fetch_cell((uint8_t)octave, slot, offset, out_ptr));
 }
 
+m3ApiRawFunction(trampoline_hostDbOpenCursor) {
+    m3ApiReturnType(uint32_t);
+    m3ApiGetArg(uint32_t, filter_ptr);
+    m3ApiGetArg(uint32_t, filter_len);
+    m3ApiReturn(semantos_host_db_open_cursor(filter_ptr, filter_len));
+}
+
+m3ApiRawFunction(trampoline_hostDbCursorPull) {
+    m3ApiReturnType(uint32_t);
+    m3ApiGetArg(uint32_t, cursor_id);
+    m3ApiGetArg(uint32_t, out_ptr);
+    m3ApiReturn(semantos_host_db_cursor_pull(cursor_id, out_ptr));
+}
+
+m3ApiRawFunction(trampoline_hostDbCursorClose) {
+    m3ApiGetArg(uint32_t, cursor_id);
+    semantos_host_db_cursor_close(cursor_id);
+    m3ApiSuccess();
+}
+
 // ── Import table wiring ──
 
 static M3Result link_host_imports(IM3Module mod) {
@@ -143,13 +190,19 @@ static M3Result link_host_imports(IM3Module mod) {
     LINK(host_sha256,         "v(*i*)");
     LINK(host_hash160,        "v(*i*)");
     LINK(host_hash256,        "v(*i*)");
+    LINK(host_ripemd160,      "v(*i*)");
+    LINK(host_sha1,           "v(*i*)");
     LINK(host_checksig,       "i(*i*i*i)");
     LINK(host_checkmultisig,  "i(*i*i*ii)");
+    LINK(host_sign,           "i(*i*i*i*)");
     LINK(host_get_blocktime,  "i()");
     LINK(host_get_sequence,   "i()");
     LINK(host_log,            "v(*i)");
     LINK(host_call_by_name,   "i(*i)");
     LINK(host_fetch_cell,     "i(iii*)");
+    LINK(hostDbOpenCursor,    "i(ii)");
+    LINK(hostDbCursorPull,    "i(ii)");
+    LINK(hostDbCursorClose,   "v(i)");
 
 #undef LINK
     return m3Err_none;

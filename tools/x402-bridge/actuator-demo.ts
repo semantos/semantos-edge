@@ -10,7 +10,7 @@
  *
  *   a | activate   valid authorization → device ACTUATES its own output (5 s)
  *   t | tamper     one sig byte flipped → device REFUSES → output stays off
- *   pay [sats]     (optional) real on-chain payment to the operator via
+ *   pay [sats]     (optional, requires --real-payment) real on-chain payment to the operator via
  *                  Metanet+ARC → real txid; the next `a` commits to that txid,
  *                  so the activation is bound to a settled payment (x402 shape).
  *
@@ -19,7 +19,8 @@
  * authorization offline, holds no key, and physically acts. Not decoupled —
  * the consequence lives on the device.
  *
- *   bun actuator-demo.ts            # auto-discovers the two boards
+ *   bun actuator-demo.ts                  # auto-discovers the two boards, no mainnet payment
+ *   bun actuator-demo.ts --real-payment   # enable Metanet+ARC payment command
  */
 
 import readline from 'node:readline';
@@ -44,6 +45,7 @@ const ports = discoverPorts();
 const injectPort = flag('--inject-port') ?? ports[0] ?? '/dev/cu.usbmodem11201';
 const watchPort  = flag('--watch') ?? ports[1] ?? ports[0] ?? '/dev/cu.usbmodem11301';
 const baud       = flag('--baud', '115200')!;
+const realPayment = process.argv.includes('--real-payment');
 
 // Operator wallet: the key every board is provisioned to trust. The operator
 // signs the activation (frame auth) + the P2PK authorization script.
@@ -125,6 +127,9 @@ function watch(port: string): void {
 
 // ── pay: a real on-chain payment to the operator (the agent paying) ──
 async function pay(satsArg?: string): Promise<void> {
+  if (!realPayment) {
+    return out('\x1b[33mpayment disabled by default; restart with --real-payment to broadcast on mainnet\x1b[0m');
+  }
   const sats = Math.max(1, parseInt(satsArg ?? '1000', 10));
   out(`agent paying the operator ${sats} sats on-chain (Metanet + ARC)...`);
   const opPubkey = await getPublicKey({ identityKey: true });
@@ -153,9 +158,9 @@ function out(s: string): void { readline.cursorTo(process.stdout, 0); readline.c
 const HELP = `commands:
   a | activate   valid authorization → device ACTUATES its own output (5s)
   t | tamper     tampered sig → device REFUSES (output stays off)
-  pay [sats]     real on-chain payment to the operator → txid; binds next \`a\`
+  pay [sats]     ${realPayment ? 'real on-chain payment to the operator → txid; binds next `a`' : 'disabled by default; restart with --real-payment'}
   help | quit
-inject → ${injectPort.split('modem')[1] ?? injectPort}   actuator board → ${watchPort.split('modem')[1] ?? watchPort}`;
+inject → ${injectPort.split('modem')[1] ?? injectPort}   actuator board → ${watchPort.split('modem')[1] ?? watchPort}   ${realPayment ? '[MAINNET PAYMENT ENABLED]' : '[no payment; pass --real-payment]'}`;
 function cleanup(): void { for (const c of readers) c.kill(); rl.close(); process.exit(0); }
 async function handle(line: string): Promise<void> {
   const a = line.trim().split(/\s+/); const cmd = a[0]?.toLowerCase();
@@ -170,7 +175,7 @@ async function handle(line: string): Promise<void> {
   } catch (e) { out(`\x1b[31merror: ${(e as Error).message}\x1b[0m`); }
 }
 
-console.log(`actuator demo — device drives its own output`);
+console.log(`actuator demo — device drives its own output (${realPayment ? 'mainnet payment enabled' : 'no mainnet payment by default'})`);
 console.log(`discovered ${ports.length} board(s): ${ports.join(', ') || '(none)'}`);
 console.log(HELP);
 watch(watchPort);

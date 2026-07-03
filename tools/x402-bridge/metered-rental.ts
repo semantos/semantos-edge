@@ -12,10 +12,11 @@
  *   open            open the channel (state OPEN; light still off)
  *   pay [sats]      send a commitment (+sats paid) → device meters + stays lit
  *                   while paid-ahead; ~1.2 sats/s, so `pay 12` ≈ 10 s of light
- *   close           close the channel; settle device_share on-chain → txid
+ *   close           close the channel; optionally settle device_share on-chain
  *   help | quit
  *
- *   bun metered-rental.ts            # auto-discovers the two boards
+ *   bun metered-rental.ts            # auto-discovers the two boards, no mainnet settlement
+ *   bun metered-rental.ts --settle   # enable Metanet+ARC mainnet settlement on close
  */
 
 import readline from 'node:readline';
@@ -36,7 +37,7 @@ const ports = discoverPorts();
 const injectPort = flag('--inject-port') ?? ports[0] ?? '/dev/cu.usbmodem11201';
 const watchPort  = flag('--watch') ?? ports[1] ?? ports[0] ?? '/dev/cu.usbmodem11301';
 const baud       = flag('--baud', '115200')!;
-const noSettle   = process.argv.includes('--no-settle');
+const settleOnClose = process.argv.includes('--settle') || process.argv.includes('--real-payment');
 
 const WALLET = new PrivateKey('0000000000000000000000000000000000000000000000000000000000000042', 16);
 const OWNER  = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex')).subarray(0, 16);
@@ -119,7 +120,12 @@ async function close(): Promise<void> {
   out(`\x1b[36m→ closing channel; final device_share=${deviceShare} sats\x1b[0m`);
   await inject(CLOSE_TYPE, encodeClose(id, seq, deviceShare));
   channel = null;
-  if (noSettle || deviceShare < 1) return;
+  if (!settleOnClose || deviceShare < 1) {
+    if (!settleOnClose && deviceShare >= 1) {
+      out('\x1b[33msettlement skipped by default; rerun with --settle to broadcast on mainnet\x1b[0m');
+    }
+    return;
+  }
   // Settle the metered total on-chain: the operator collects device_share sats.
   try {
     out('settling device_share on-chain (Metanet + ARC)...');
@@ -140,9 +146,9 @@ function out(s: string): void { readline.cursorTo(process.stdout, 0); readline.c
 const HELP = `commands:
   open         open the channel (light off until paid)
   pay [sats]   commitment (+sats) → device meters; ~1.2 sats/s (pay 12 ≈ 10s lit)
-  close        close + settle device_share on-chain → txid
+  close        close${settleOnClose ? ' + settle device_share on-chain → txid' : ' (no mainnet settlement by default)'}
   help | quit
-inject → ${injectPort.split('modem')[1] ?? injectPort}   meter board → ${watchPort.split('modem')[1] ?? watchPort}`;
+inject → ${injectPort.split('modem')[1] ?? injectPort}   meter board → ${watchPort.split('modem')[1] ?? watchPort}   ${settleOnClose ? '[MAINNET SETTLEMENT ENABLED]' : '[no settlement; pass --settle]'}`;
 function cleanup(): void { for (const c of readers) c.kill(); rl.close(); process.exit(0); }
 async function handle(line: string): Promise<void> {
   const a = line.trim().split(/\s+/); const cmd = a[0]?.toLowerCase();
@@ -157,7 +163,7 @@ async function handle(line: string): Promise<void> {
   } catch (e) { out(`\x1b[31merror: ${(e as Error).message}\x1b[0m`); }
 }
 
-console.log('metered rental — the device meters its own pay-per-second');
+console.log(`metered rental — the device meters its own pay-per-second (${settleOnClose ? 'mainnet settlement enabled' : 'no mainnet settlement by default'})`);
 console.log(`discovered ${ports.length} board(s): ${ports.join(', ') || '(none)'}`);
 console.log(HELP);
 watch(watchPort);

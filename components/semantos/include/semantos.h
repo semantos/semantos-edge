@@ -69,7 +69,7 @@ void semantos_destroy(semantos_t *sem);
 // ── Kernel exports (thin wrappers around the WASM module exports) ──
 // These map one-to-one to the exports declared in
 // packages/cell-engine/src/main.zig. Only the ones you are likely to need
-// from a meetup hack project are surfaced here; the others can be added by
+// for edge-kit experiments are surfaced here; the others can be added by
 // following the same pattern.
 
 int semantos_kernel_init(semantos_t *sem);
@@ -92,6 +92,10 @@ int semantos_kernel_load_tx_context(semantos_t *sem,
                                      const uint8_t *tx, uint32_t tx_len,
                                      uint32_t input_index,
                                      uint64_t input_value);
+
+// Set the current transaction output index observed by OP_BRANCHONOUTPUT.
+// Call before kernel_execute() when validating per-output routing scripts.
+int semantos_kernel_set_output_index(semantos_t *sem, uint32_t output_index);
 
 int semantos_kernel_execute(semantos_t *sem);
 

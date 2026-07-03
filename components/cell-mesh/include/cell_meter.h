@@ -1,12 +1,12 @@
 // cell_meter.h — device-side draining meter for the Metered Flow Protocol.
 //
-// The device is the trusted meter (Craig's stance: it measures + verifies,
-// it does not hold keys). While service is being delivered — the lightbulb
-// is lit, bandwidth is flowing — the meter accrues *consumed value* at a
-// pro-rata rate. The consumer keeps the channel paid ahead of consumption
-// by sending fresh commitment cells that raise the channel's `device_share`
-// (see cell_channel.h). The actuator may keep delivering service only while
-// the paid `device_share` covers what's been consumed.
+// The device is the trusted meter: it measures + verifies, but does not hold
+// spending keys. While service is being delivered — the lightbulb is lit,
+// bandwidth is flowing — the meter accrues *consumed value* at a pro-rata
+// rate. The consumer keeps the channel paid ahead of consumption by sending
+// fresh commitment cells that raise the channel's `device_share` (see
+// cell_channel.h). The actuator may keep delivering service only while the
+// paid `device_share` covers what's been consumed.
 //
 // This is the device half of the prepaid-drain model: when the consumer
 // stops paying (the Tier-0 vault is exhausted, or the wallet went away),

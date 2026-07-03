@@ -1,26 +1,12 @@
 menu "Semantos cell-engine"
 
-    choice SEMANTOS_RUNTIME
-        prompt "WASM runtime backend"
-        default SEMANTOS_RUNTIME_WASM3
+    config SEMANTOS_RUNTIME_WAMR
+        bool
+        default y
         help
-            Choose which WebAssembly runtime hosts the Semantos cell-engine
-            embedded WASM blob on the ESP32.
-
-        config SEMANTOS_RUNTIME_WASM3
-            bool "wasm3 (smallest footprint, interpreter)"
-            help
-                wasm3 is a tiny WebAssembly interpreter (~64KB code, works
-                without PSRAM). Good default for ESP32, ESP32-S2, ESP32-C3.
-                Requires the wasm3 component in your project.
-
-        config SEMANTOS_RUNTIME_WAMR
-            bool "WAMR (WebAssembly Micro Runtime)"
-            help
-                Bytecode Alliance runtime. Supports interpreter and AOT modes;
-                faster at the cost of size. Recommended for ESP32-S3 with
-                PSRAM. Requires the wamr component in your project.
-    endchoice
+            Public edge-kit builds are WAMR-only. The earlier wasm3 backend
+            remains in source as a reference port, but it is not compiled by
+            the component CMake file.
 
     config SEMANTOS_WASM_STACK_SIZE
         int "WASM module stack size (bytes)"

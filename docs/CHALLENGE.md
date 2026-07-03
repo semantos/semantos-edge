@@ -1,6 +1,6 @@
 # Meetup Challenge: What Can You Build?
 
-The goal of this hack-kit is not to convince you that Semantos is a
+The goal of this edge kit is not to convince you that Semantos is a
 good idea. It is to let you play with a live, running cell-engine on
 an ESP32 and see what falls out.
 
@@ -53,7 +53,7 @@ feels fun.
       (a Python `http.server` is enough). Return a JSON proof.
 - [ ] **ESP-NOW broadcast anchor.** Broadcast the state hash to all
       peers on the channel; collect proofs from any responder that
-      acks. Fun for multi-device meetups.
+      acks. Fun for multi-device workshops.
 - [ ] **SD card append-only log.** Every anchor submission gets
       written to a line in `/anchors.log` with a timestamp and
       sequence number. The proof is the byte offset of the entry.
@@ -67,7 +67,7 @@ feels fun.
       object JSON to an MQTT broker on `192.168.0.x` (or
       `test.mosquitto.org` if you trust the internet). Subscribe from
       a laptop and watch messages flow.
-- [ ] **ESP-NOW mesh.** Multi-device meetup hack: every board
+- [ ] **ESP-NOW mesh.** Multi-device workshop: every board
       broadcasts its objects over ESP-NOW and caches objects it
       receives in a local index. Query the index for
       `network_resolve`. Now you have a tiny mesh of Semantos
@@ -111,20 +111,22 @@ instead by adding entries to `semantos_host_call_by_name`.
 - [ ] **Pure-ESP32 Semantos node.** Implement all four adapters
       properly. Provision identity on first boot. Anchor to a real
       gateway. Publish and resolve over MQTT. Store cells in SPIFFS.
-      Boot the device, hand it to someone else at the meetup, and
+      Boot the device, hand it to someone else in the lab, and
       have it integrate into the rest of your setup automatically.
-- [ ] **Second runtime.** Swap wasm3 for WAMR and measure the
-      difference in module load time, execution time, and RAM
-      pressure. Report back.
-- [ ] **Port to ESP32-C6.** The C6 has a RISC-V core and 802.15.4.
-      Get the hack-kit building for it, then build something using
-      Thread or Zigbee.
+- [ ] **Zig ESP-IDF integration.** The pure `cell-mesh` modules now have Zig
+      implementations behind the existing `cm_*` C ABI. Wire
+      `components/cell-mesh-zig` into the ESP-IDF component build for C6 while
+      keeping `cell_radio` and `cell_sig` C-facing.
+- [ ] **Second radio.** The C6 has a RISC-V core and 802.15.4. Keep the
+      WAMR runtime path, but build a Thread or Zigbee transport under the
+      existing network adapter / frame API.
 
 ## Rules
 
 There are no rules. Work on whatever sounds fun. Break things. Ignore
-the "right" way when it's boring. Write up what you found at the next
-meetup so everyone else can steal your ideas.
+the "right" way when it's boring. Write up what you found so everyone
+else can steal your ideas.
 
 If something doesn't work the way the docs say, that's probably a bug
-in the docs. Or the code. Either way, let Todd know.
+in the docs or the code. Open an issue with the board model, ESP-IDF version,
+and the exact command you ran.

@@ -125,6 +125,20 @@ real `txid` (+ `x-bsv-payment-txid` header). `whatsonchain.com/tx/<txid>`.
 Guardrails: `--max-sats` caps accepted/broadcast value; without `--real-payment`
 the bridge uses the simulated verifier (no real money).
 
+## Safety Defaults
+
+The public kit defaults to dry-run or no-settlement behavior:
+
+| Command | Default | Mainnet opt-in |
+|---|---|---|
+| `bun run x402-bridge` | simulated verifier | `bun run x402-bridge:mainnet -- --max-sats N` |
+| `bun run gated-spend` | dry run, no broadcast | `bun run gated-spend:mainnet -- --max-sats N` |
+| `bun run actuator-demo` | activation only, payment disabled | `bun run actuator-demo:mainnet` |
+| `bun run metered-rental` | channel close records on-device only | `bun run metered-rental:mainnet` |
+
+Any path that can broadcast or settle on mainnet says so at startup and requires
+an explicit flag or `:mainnet` script.
+
 **Hardening still open:** per-payment counterparty key rotation (full BRC-29
 invoice derivation) for payer-unlinkability; right now the receive key is a
 single recoverable MD-derived leaf per offer. Plugs into the same

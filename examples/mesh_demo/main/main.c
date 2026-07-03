@@ -14,10 +14,9 @@
 // broadcast — they verify other devices' cells against the wallet's
 // pubkey, but never themselves hold a signing key.
 //
-// This matches Craig's "no private keys on IoT devices" architectural
-// stance (memory: craig_no_keys_on_device_stance). The runtime
-// rule-driven EMIT path (confirmed_tap) still requires a key for now;
-// see CRAIG_TODO below.
+// This matches the project rule that IoT devices verify and act while
+// wallets sign. The runtime rule-driven EMIT path (confirmed_tap) still
+// requires a key for now; see the confirmed_tap notes below.
 
 #include <stdio.h>
 #include <string.h>

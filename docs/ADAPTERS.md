@@ -128,7 +128,7 @@ transport is entirely your choice.
 - **MQTT** over Wi-Fi is the obvious one. `esp_mqtt_client_enqueue()`
   for publish, subscribe to a wildcard topic and cache results in an
   in-memory index for resolve.
-- **ESP-NOW** for mesh-ish behaviour between meetup members' boards
+- **ESP-NOW** for mesh-ish behaviour between nearby boards
   without a Wi-Fi AP.
 - **mDNS** for resolve-only ("who has a certificate for vendor X?"
   queries).

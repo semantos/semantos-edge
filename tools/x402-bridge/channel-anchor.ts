@@ -3,7 +3,7 @@
  *
  * Opens a real on-chain channel: funds a P2PKH output via Metanet Desktop
  * (BRC-42), derives a 16-byte channel_id from the funding txid, pre-signs
- * a refund tx with nLockTime (BSV has no CLTV — see memory note), and on
+ * a refund tx with nLockTime (BSV has no CLTV), and on
  * settlement threshold builds + broadcasts a spending tx that records
  * accumulated device_share vs remaining user_share on chain.
  *
@@ -11,7 +11,7 @@
  *   channelId = Buffer.from(fundingTxid, 'hex').subarray(0, 16)
  *   (first 16 bytes of the txid in conventional display/hex order)
  *
- * Settlement model for this demo (Craig's rule — no keys on device):
+ * Settlement model for this demo (no keys on device):
  *   • device_share output → wallet key (device has no BSV signing key)
  *   • user_share output  → wallet key
  *   Track 2 (BRC-42 edge keys) replaces the device output with a

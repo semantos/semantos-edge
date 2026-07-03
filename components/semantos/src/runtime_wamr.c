@@ -1,19 +1,17 @@
 // runtime_wamr.c — WAMR (WebAssembly Micro Runtime) backend for the
 // Semantos cell-engine.
 //
-// WAMR is the fatter, faster option. It supports both a classic
-// interpreter and an AOT mode; for a 29KB module on ESP32 the classic
-// interpreter is plenty. WAMR wants more RAM than wasm3, so we recommend
-// ESP32-S3 with PSRAM for this backend.
+// WAMR is the public edge-kit runtime. It supports both a classic
+// interpreter and an AOT mode; for this small embedded module the classic
+// interpreter is plenty. The ESP32-C6 and S3 are the primary targets for
+// this backend.
 //
 // Each host import declared in packages/cell-engine/src/host.zig is
 // bound here as a NativeSymbol in the "host" module namespace. The
 // signature strings follow WAMR's convention: "(ii*)i" means
 // (i32, i32, pointer)->i32, etc.
 //
-// NOTE: This file is only compiled when CONFIG_SEMANTOS_RUNTIME_WAMR is
-// selected. The wamr component (espressif/wamr) must be added to the
-// application's idf_component.yml.
+// NOTE: The component depends on Espressif's wasm-micro-runtime package.
 
 #include "semantos_internal.h"
 #include "sdkconfig.h"
@@ -45,7 +43,7 @@ struct semantos_runtime_backend {
     uint32_t               bump_top;
     // WAMR's wasm_runtime_load mutates its input buffer (resolves imports,
     // patches sections in place) and keeps a reference to it for the
-    // lifetime of the module. The hackkit embeds the WASM via EMBED_FILES
+    // lifetime of the module. The edge kit embeds the WASM via EMBED_FILES
     // which lives in flash (XIP, read-only on ESP32-C6 and friends). We
     // copy the bytes into a RAM buffer here, owned by the backend, freed
     // on unload.
@@ -89,6 +87,20 @@ static void trampoline_host_hash256(wasm_exec_env_t env,
     semantos_host_hash256(data, data_len, out);
 }
 
+static void trampoline_host_ripemd160(wasm_exec_env_t env,
+                                      const uint8_t *data, uint32_t data_len,
+                                      uint8_t *out) {
+    (void)env;
+    semantos_host_ripemd160(data, data_len, out);
+}
+
+static void trampoline_host_sha1(wasm_exec_env_t env,
+                                 const uint8_t *data, uint32_t data_len,
+                                 uint8_t *out) {
+    (void)env;
+    semantos_host_sha1(data, data_len, out);
+}
+
 static uint32_t trampoline_host_checksig(wasm_exec_env_t env,
                                          const uint8_t *pk,  uint32_t pk_len,
                                          const uint8_t *msg, uint32_t msg_len,
@@ -105,6 +117,15 @@ static uint32_t trampoline_host_checkmultisig(wasm_exec_env_t env,
     (void)env;
     return semantos_host_checkmultisig(pks, pks_count, sigs, sigs_count,
                                        msg, msg_len, threshold);
+}
+
+static uint32_t trampoline_host_sign(wasm_exec_env_t env,
+                                     const uint8_t *sk, uint32_t sk_len,
+                                     const uint8_t *msg, uint32_t msg_len,
+                                     uint8_t *out, uint32_t out_buf_len,
+                                     uint32_t *out_len) {
+    (void)env;
+    return semantos_host_sign(sk, sk_len, msg, msg_len, out, out_buf_len, out_len);
 }
 
 static uint32_t trampoline_host_get_blocktime(wasm_exec_env_t env) {
@@ -136,17 +157,43 @@ static uint32_t trampoline_host_fetch_cell(wasm_exec_env_t env,
     return semantos_host_fetch_cell((uint8_t)octave, slot, offset, out);
 }
 
+static uint32_t trampoline_host_db_open_cursor(wasm_exec_env_t env,
+                                               uint32_t filter_ptr,
+                                               uint32_t filter_len) {
+    (void)env;
+    return semantos_host_db_open_cursor(filter_ptr, filter_len);
+}
+
+static uint32_t trampoline_host_db_cursor_pull(wasm_exec_env_t env,
+                                               uint32_t cursor_id,
+                                               uint32_t out_ptr) {
+    (void)env;
+    return semantos_host_db_cursor_pull(cursor_id, out_ptr);
+}
+
+static void trampoline_host_db_cursor_close(wasm_exec_env_t env,
+                                            uint32_t cursor_id) {
+    (void)env;
+    semantos_host_db_cursor_close(cursor_id);
+}
+
 static NativeSymbol g_host_native_symbols[] = {
     { "host_sha256",        trampoline_host_sha256,        "(*~*)",   NULL },
     { "host_hash160",       trampoline_host_hash160,       "(*~*)",   NULL },
     { "host_hash256",       trampoline_host_hash256,       "(*~*)",   NULL },
+    { "host_ripemd160",     trampoline_host_ripemd160,     "(*~*)",   NULL },
+    { "host_sha1",          trampoline_host_sha1,          "(*~*)",   NULL },
     { "host_checksig",      trampoline_host_checksig,      "(*~*~*~)i", NULL },
     { "host_checkmultisig", trampoline_host_checkmultisig, "(*~*~*~i)i", NULL },
+    { "host_sign",          trampoline_host_sign,          "(*~*~*~*)i", NULL },
     { "host_get_blocktime", trampoline_host_get_blocktime, "()i",     NULL },
     { "host_get_sequence",  trampoline_host_get_sequence,  "()i",     NULL },
     { "host_log",           trampoline_host_log,           "(*~)",    NULL },
     { "host_call_by_name",  trampoline_host_call_by_name,  "(*~)i",   NULL },
     { "host_fetch_cell",    trampoline_host_fetch_cell,    "(iii*)i", NULL },
+    { "hostDbOpenCursor",   trampoline_host_db_open_cursor, "(ii)i",  NULL },
+    { "hostDbCursorPull",   trampoline_host_db_cursor_pull, "(ii)i",  NULL },
+    { "hostDbCursorClose",  trampoline_host_db_cursor_close, "(i)",   NULL },
 };
 
 // ── Backend interface ──
@@ -157,10 +204,9 @@ static NativeSymbol g_host_native_symbols[] = {
 //
 // Pool sizing — IMPORTANT MCU DETAIL:
 // On ESP-IDF, linear memory does NOT come from the WAMR pool. WAMR routes
-// linear-memory allocations through os_mmap → heap_caps_malloc directly
+// linear-memory allocations through os_mmap -> heap_caps_malloc directly
 // (see espidf_memmap.c). So the pool only needs to hold WAMR's internal
-// structures: parsed AST, exports table, native bindings, the WASM module
-// byte copy. ~96KB is plenty for our 36KB cell-engine-embedded blob.
+// structures: parsed AST, exports table, native bindings, and loader state.
 //
 // CRITICAL: making the pool TOO BIG starves the heap of contiguous space
 // for the linear-memory mmap. With a 256KB pool, the linear-memory mmap
@@ -168,14 +214,16 @@ static NativeSymbol g_host_native_symbols[] = {
 // the biggest contiguous chunk first. Sizing it tight is the correct move.
 //
 // We malloc the pool from the FreeRTOS heap rather than declaring it as a
-// static array — putting it in `.bss` would blow the linker's sram_seg
-// budget. Heap allocation comes from the larger dynamic region.
+// static array; putting it in `.bss` would blow the linker's sram_seg
+// budget. On ESP32-S3 boards with PSRAM (for example LilyGO T-Display-S3),
+// keep this pool external so LCD buffers and WAMR linear memory are not
+// fighting for the same contiguous internal-RAM block.
 //
-// Tuned 2026-05-21 in the mesh_demo bring-up: 128 KB pool + 128 KB
-// linear memory + a pthread stack starved the heap of a contiguous
-// 128 KB block ("allocate linear memory failed"). 80 KB leaves enough
-// runway; the 36 KB embedded blob's internal needs sit well under that.
+#if CONFIG_SPIRAM
 #define WAMR_HEAP_POOL_BYTES (128 * 1024)
+#else
+#define WAMR_HEAP_POOL_BYTES (96 * 1024)
+#endif
 static uint8_t *g_wamr_heap_pool = NULL;
 
 esp_err_t semantos_runtime_load(semantos_t *sem, const uint8_t *wasm, size_t wasm_len) {
@@ -184,12 +232,24 @@ esp_err_t semantos_runtime_load(semantos_t *sem, const uint8_t *wasm, size_t was
         // pthread_self() assertion failure on ESP32-C6 (the system and
         // custom-callback paths both trip it during wasm_runtime_full_init).
         if (!g_wamr_heap_pool) {
+#if CONFIG_SPIRAM
+            g_wamr_heap_pool = heap_caps_malloc(WAMR_HEAP_POOL_BYTES,
+                                                MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+            if (g_wamr_heap_pool) {
+                ESP_LOGI(SEMANTOS_TAG, "wamr pool allocated in PSRAM (%d bytes)",
+                         WAMR_HEAP_POOL_BYTES);
+            }
+#endif
+        }
+        if (!g_wamr_heap_pool) {
             g_wamr_heap_pool = heap_caps_malloc(WAMR_HEAP_POOL_BYTES,
                                                 MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
             if (!g_wamr_heap_pool) {
                 ESP_LOGE(SEMANTOS_TAG, "wamr pool malloc(%d) failed", WAMR_HEAP_POOL_BYTES);
                 return ESP_ERR_NO_MEM;
             }
+            ESP_LOGI(SEMANTOS_TAG, "wamr pool allocated in internal RAM (%d bytes)",
+                     WAMR_HEAP_POOL_BYTES);
         }
         RuntimeInitArgs init_args = {0};
         init_args.mem_alloc_type = Alloc_With_Pool;

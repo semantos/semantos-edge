@@ -8,10 +8,9 @@
 //   [   0..255 ] header   (CM_HEADER_SIZE = 256)
 //   [ 256..1023] payload  (CM_PAYLOAD_SIZE = 768)
 //
-// There is NO parallel struct representation. Do not introduce one — see
-// memory `cell_is_the_wire_format`. All accessors are zero-copy: scalar
-// getters return values; byte-field getters return pointers into the cell
-// bytes themselves.
+// There is NO parallel struct representation. Do not introduce one. All
+// accessors are zero-copy: scalar getters return values; byte-field getters
+// return pointers into the cell bytes themselves.
 
 #pragma once
 

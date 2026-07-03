@@ -18,9 +18,8 @@ extern "C" {
 
 #define SEMANTOS_TAG "semantos"
 
-// Opaque runtime handle — the concrete type is defined inside the runtime
-// backend (runtime_wasm3.c / runtime_wamr.c). Each backend owns whatever
-// interpreter state it needs.
+// Opaque runtime handle — the concrete type is defined inside the WAMR
+// backend. The old wasm3 file is retained only as a reference port.
 typedef struct semantos_runtime_backend semantos_runtime_backend_t;
 
 // Context shared between the public API, the host imports, and the runtime
@@ -41,8 +40,8 @@ struct semantos_ctx {
 extern _Thread_local semantos_t *semantos_current;
 
 // ── Runtime backend interface ──
-// Each backend (wasm3, wamr) implements these. Exactly one backend is
-// compiled in based on Kconfig.
+// The WAMR backend implements these. Keep the boundary narrow so another
+// runtime can be restored without changing the public API.
 
 esp_err_t semantos_runtime_load(semantos_t *sem,
                                 const uint8_t *wasm,
@@ -71,17 +70,19 @@ uint32_t semantos_runtime_memcpy_in(semantos_t *sem,
 void semantos_runtime_memfree(semantos_t *sem, uint32_t wasm_ptr, size_t len);
 
 // ── Host import registration — called from the runtime backend at load
-//    time to wire all 10 "host" namespace imports. ──
+//    time to wire the "host" namespace imports. ──
 
 esp_err_t semantos_register_host_imports(semantos_t *sem);
 
-// ── The 10 host imports. Each backend wraps these into whatever the
+// ── The host imports. Each backend wraps these into whatever the
 //    runtime's import-binding ABI expects (IM3Function, NativeSymbol, ...). ──
 
-// Crypto (5)
+// Crypto
 void     semantos_host_sha256(const uint8_t *data, uint32_t data_len, uint8_t *out32);
 void     semantos_host_hash160(const uint8_t *data, uint32_t data_len, uint8_t *out20);
 void     semantos_host_hash256(const uint8_t *data, uint32_t data_len, uint8_t *out32);
+void     semantos_host_ripemd160(const uint8_t *data, uint32_t data_len, uint8_t *out20);
+void     semantos_host_sha1(const uint8_t *data, uint32_t data_len, uint8_t *out20);
 uint32_t semantos_host_checksig(const uint8_t *pk, uint32_t pk_len,
                                 const uint8_t *msg, uint32_t msg_len,
                                 const uint8_t *sig, uint32_t sig_len);
@@ -89,6 +90,10 @@ uint32_t semantos_host_checkmultisig(const uint8_t *pks, uint32_t pks_count,
                                      const uint8_t *sigs, uint32_t sigs_count,
                                      const uint8_t *msg, uint32_t msg_len,
                                      uint32_t threshold);
+uint32_t semantos_host_sign(const uint8_t *sk, uint32_t sk_len,
+                            const uint8_t *msg, uint32_t msg_len,
+                            uint8_t *out, uint32_t out_buf_len,
+                            uint32_t *out_len);
 
 // Utility (3)
 uint32_t semantos_host_get_blocktime(void);
@@ -100,6 +105,12 @@ uint32_t semantos_host_call_by_name(const char *name, uint32_t name_len);
 
 // Phase 6: octave memory fetch
 uint32_t semantos_host_fetch_cell(uint8_t octave, uint32_t slot, uint32_t offset, uint8_t *out_ptr);
+
+// Cursor host imports. The public kit ships fail-closed stubs until an app
+// wires these to a cell store.
+uint32_t semantos_host_db_open_cursor(uint32_t filter_ptr, uint32_t filter_len);
+uint32_t semantos_host_db_cursor_pull(uint32_t cursor_id, uint32_t out_ptr);
+void     semantos_host_db_cursor_close(uint32_t cursor_id);
 
 #ifdef __cplusplus
 }

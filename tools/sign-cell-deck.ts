@@ -2,12 +2,12 @@
 /**
  * sign-cell-deck.ts — pre-sign a deck of mesh_demo cells, off-device.
  *
- * Aligns the mesh_demo with Craig's "no private keys on IoT devices"
- * stance (see memory: craig_no_keys_on_device_stance). The wallet
- * (this script) signs every heartbeat / tap / hot-swap-rule cell at
- * provisioning time; mesh_demo embeds the resulting deck in flash and
- * the device just pops + broadcasts pre-signed cells. The XIAOs hold
- * NO private key at runtime — they're verifier-and-broadcaster only.
+ * Aligns the mesh_demo with the project rule that IoT devices verify and
+ * act while wallets sign. The wallet (this script) signs every heartbeat /
+ * tap / hot-swap-rule cell at provisioning time; mesh_demo embeds the
+ * resulting deck in flash and the device just pops + broadcasts pre-signed
+ * cells. The XIAOs hold NO private key at runtime — they're
+ * verifier-and-broadcaster only.
  *
  * Demo wallet keypair is committed below (it's the WALLET's identity,
  * controlled by the operator who runs this script). Replace with a
@@ -561,9 +561,8 @@ function generateDeck(): Uint8Array {
       // Wallet-signed P2PK for OP_CHECKSIG demo slot.
       //
       // Why P2PK instead of the foreign-key checksig-p2pkh.json test
-      // vector: mbedTLS on ESP-IDF v5.3.1 rejects the test vector's sig
-      // (mystery in memory:c6_mbedtls_checksig_mystery). @bsv/sdk's own
-      // sigs verify cleanly under that same mbedTLS (proven by every
+      // vector: mbedTLS on ESP-IDF v5.3.1 rejects the test vector's sig.
+      // @bsv/sdk's own sigs verify cleanly under that same mbedTLS (proven by every
       // cell-frame on the wire). So we have @bsv/sdk re-sign a fresh
       // BIP-143 sighash against the wallet's own pubkey — that lands
       // in the subset of ECDSA sigs mbedTLS accepts.

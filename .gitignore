@@ -13,6 +13,11 @@ zig-out/
 node_modules/
 bun.lockb
 
+# Local config / secrets
+.env
+.env.*
+!.env.example
+
 # Holds a spend key (WIF) for an unsettled UTXO — never commit
 .gated-spend-state.json
 

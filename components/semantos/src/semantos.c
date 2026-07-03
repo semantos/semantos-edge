@@ -149,6 +149,11 @@ int semantos_kernel_load_tx_context(semantos_t *sem,
     return rc;
 }
 
+int semantos_kernel_set_output_index(semantos_t *sem, uint32_t output_index) {
+    uint32_t argv[1] = { output_index };
+    return call_i32(sem, "kernel_set_output_index", argv, 1);
+}
+
 int semantos_kernel_execute(semantos_t *sem) {
     return call_i32(sem, "kernel_execute", NULL, 0);
 }

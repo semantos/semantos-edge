@@ -35,7 +35,7 @@
 //
 // DESIGN NOTES
 // ────────────
-// No private key on device (Craig's stance). Cells carry a senderFp
+// No private key on device. Cells carry a senderFp
 // (SHA-256(SENSOR_ID)[0:4]) as an identifier. The anchor (PushDrop txid)
 // is computed by the relay-side bridge, not on-device.
 //

@@ -1,5 +1,5 @@
-// host_utility.c — the five non-crypto host imports: log, blocktime,
-// sequence, call_by_name, fetch_cell.
+// host_utility.c — non-crypto host imports: log, blocktime, sequence,
+// call_by_name, fetch_cell, and cursor stubs.
 //
 // These are deliberately dumb on the ESP32:
 //
@@ -11,6 +11,7 @@
 //   call_by_name — host function dispatch (unknown names return 0xFFFFFFFF)
 //   fetch_cell — octave-memory retrieval stub (returns 0 = failure until
 //                you wire in real higher-octave storage)
+//   cursor ops — cell-store streaming stubs (return empty/failure until wired)
 
 #include "semantos_internal.h"
 
@@ -48,8 +49,8 @@ uint32_t semantos_host_get_sequence(void) {
 // ── call_by_name ────────────────────────────────────────────────────────
 //
 // The kernel uses this to reach named host functions from inside a script
-// (Phase 25.5 opcodes). For the hack-kit we ship an empty dispatch table;
-// meetup folks can add their own names here (e.g. "gpio.toggle",
+// (Phase 25.5 opcodes). For the edge kit we ship an empty dispatch table;
+// contributors can add their own names here (e.g. "gpio.toggle",
 // "led.blink", "sensor.read") and have scripts call them.
 //
 // Returning 0xFFFFFFFF tells the kernel the name is unknown.
@@ -71,7 +72,7 @@ uint32_t semantos_host_call_by_name(const char *name, uint32_t name_len) {
 //
 // The cell-engine's octave memory model lets scripts reference cells that
 // live outside the 1KB WASM-side working set by asking the host to slice
-// a chunk from a higher octave. For a meetup hack-kit we don't ship a
+// a chunk from a higher octave. For the public edge kit we don't ship a
 // real multi-octave store — this is where you'd plug your SPIFFS /
 // SD-card / LittleFS-backed cell provider.
 //
@@ -90,4 +91,35 @@ uint32_t semantos_host_fetch_cell(uint8_t octave, uint32_t slot, uint32_t offset
     (void)offset;
     (void)out_ptr;
     return 0;
+}
+
+uint32_t semantos_host_db_open_cursor(uint32_t filter_ptr, uint32_t filter_len) {
+#if CONFIG_SEMANTOS_LOG_HOST_CALLS
+    ESP_LOGI(SEMANTOS_TAG,
+             "db_open_cursor filter_ptr=0x%08x filter_len=%u (not implemented)",
+             (unsigned)filter_ptr, (unsigned)filter_len);
+#endif
+    (void)filter_ptr;
+    (void)filter_len;
+    return 0;
+}
+
+uint32_t semantos_host_db_cursor_pull(uint32_t cursor_id, uint32_t out_ptr) {
+#if CONFIG_SEMANTOS_LOG_HOST_CALLS
+    ESP_LOGI(SEMANTOS_TAG,
+             "db_cursor_pull cursor=%u out_ptr=0x%08x (not implemented)",
+             (unsigned)cursor_id, (unsigned)out_ptr);
+#endif
+    (void)cursor_id;
+    (void)out_ptr;
+    return 0;
+}
+
+void semantos_host_db_cursor_close(uint32_t cursor_id) {
+#if CONFIG_SEMANTOS_LOG_HOST_CALLS
+    ESP_LOGI(SEMANTOS_TAG,
+             "db_cursor_close cursor=%u (not implemented)",
+             (unsigned)cursor_id);
+#endif
+    (void)cursor_id;
 }

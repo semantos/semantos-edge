@@ -33,18 +33,15 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
-# Semantos cell-engine runs on WAMR (wasm3 isn't in the IDF component
-# registry anymore as of 2026-05). The wamr managed component is
-# auto-pulled in by the semantos REQUIRES.
-CONFIG_SEMANTOS_RUNTIME_WASM3=n
-CONFIG_SEMANTOS_RUNTIME_WAMR=y
+# Semantos cell-engine runs on WAMR. The managed component is auto-pulled by
+# the semantos REQUIRES entry.
 # Shrink the WASM execution stack from 16 KB default — instantiate
 # allocates stack + heap + linear memory together; on a C6 the 128 KB
 # linear memory + 16 KB stack + 8 KB heap pushes past the largest
 # contiguous heap block after WAMR's 128 KB pool grabs its slice.
 CONFIG_SEMANTOS_WASM_STACK_SIZE=8192
 
-# WAMR-on-C6 wall-breakers (memory: wamr_esp32c6_integration_wall):
+# WAMR-on-C6 requirements:
 #   1. RIPEMD160 — needed by the cell-engine's hash160 host import.
 #   2. WAMR reference-types — kernel module uses ref-typed table ops.
 CONFIG_MBEDTLS_RIPEMD160_C=y

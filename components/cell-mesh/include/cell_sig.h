@@ -80,8 +80,8 @@ int cm_sig_verify_prepared(const cm_sig_pubkey_t *pub,
                            const uint8_t sig[CM_SIG_BYTES]);
 
 // Derive the 33-byte compressed public key from a 32-byte private key.
-// Useful at boot to populate a peer registry — caller bakes private keys
-// in NVS / flash, and derives pubkeys at startup for verify operations.
+// Useful for tests and provisioning tools. Production device flows should
+// prefer verifier-only keys on-device and keep spending keys off-device.
 // Returns 0 on success, negative on error.
 int cm_sig_derive_pubkey(const uint8_t privkey[CM_SIG_PRIVKEY_BYTES],
                          uint8_t out_pubkey_compressed[CM_SIG_PUBKEY_COMPRESSED]);

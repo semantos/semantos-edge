@@ -5,9 +5,10 @@
 // each hop when building the route, embeds them all in the cell, and each
 // relay/destination verifies its own commitment before forwarding.
 //
-// Craig's rule: "Devices verify + act; wallets sign.  Source pre-signs
-// commitments for the whole route; per-hop minting is wrong shape."
-// → no signing on-device, only cm_channel_apply_commitment (verify + accept).
+// Project rule: devices verify + act; wallets sign. The source pre-signs
+// commitments for the whole route; per-hop minting is the wrong shape.
+// There is no signing on-device, only cm_channel_apply_commitment
+// (verify + accept).
 //
 // Wire layout (192-byte header + variable inner):
 //

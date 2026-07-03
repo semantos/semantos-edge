@@ -1,18 +1,13 @@
 # Default sdkconfig for hello_cell.
 #
-# wasm3 was the original size-preferred runtime but is no longer in the
-# Espressif component registry. WAMR (`espressif/wasm-micro-runtime`) is
-# the active option. Bigger code footprint (~150KB vs ~64KB) but supports
-# all current targets including ESP32-C6 without PSRAM.
-
-# CONFIG_SEMANTOS_RUNTIME_WASM3 is not set
-CONFIG_SEMANTOS_RUNTIME_WAMR=y
+# The public edge kit uses WAMR (`espressif/wasm-micro-runtime`).
+# The old wasm3 backend is kept only as a reference port.
 
 CONFIG_SEMANTOS_WASM_STACK_SIZE=16384
 CONFIG_SEMANTOS_LOG_HOST_CALLS=n
 
 # Bump the main task stack a bit — the example is shallow but the WAMR
-# interpreter wants headroom (more than wasm3 needed).
+# interpreter wants headroom.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # Log level set to INFO so you actually see the kernel traces.

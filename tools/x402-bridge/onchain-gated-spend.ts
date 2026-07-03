@@ -15,11 +15,11 @@
  * enforce (verified separately), so a C6-accepted spend is valid on mainnet.
  * The device is the gatekeeper: only spends it validates ever reach the chain.
  *
- *   # offline: prove the C6 validates a real-format spend, no money, no wallet
+ *   # offline/default: prove the C6 validates a real-format spend, no money, no wallet
  *   bun onchain-gated-spend.ts --dry
  *
  *   # live (needs Metanet Desktop running + a few thousand spendable sats):
- *   bun onchain-gated-spend.ts --inject-port /dev/cu.usbmodem11201 \
+ *   bun onchain-gated-spend.ts --live --inject-port /dev/cu.usbmodem11201 \
  *                              --watch /dev/cu.usbmodem11301 --fund-sats 1200
  *   fund      → creates + broadcasts the P2PK UTXO
  *   b         → gated-reject a tampered spend (nothing settles)
@@ -56,7 +56,8 @@ const baud       = flag('--baud', '115200')!;
 const fundSats   = parseInt(flag('--fund-sats', '1200')!, 10);
 const feeSats    = parseInt(flag('--fee-sats', '300')!, 10);
 const maxSats    = parseInt(flag('--max-sats', '5000')!, 10);   // hard safety cap
-const DRY        = has('--dry');
+const LIVE       = has('--live') && !has('--dry');
+const DRY        = !LIVE;
 
 // Transport wallet (frame-auth): the key every board is provisioned to trust.
 const WALLET = new PrivateKey('0000000000000000000000000000000000000000000000000000000000000042', 16);
@@ -267,7 +268,7 @@ const HELP = `commands:
   b | bad     inject a TAMPERED spend → engine REJECT → nothing settles
   settle      broadcast the last good spend (fallback if the watch missed ACCEPT)
   help | quit
-inject → ${injectPort.split('modem')[1] ?? injectPort}   watch → ${watchPort.split('modem')[1] ?? watchPort}   ${DRY ? '[DRY: no broadcast]' : '[LIVE MAINNET]'}`;
+inject → ${injectPort.split('modem')[1] ?? injectPort}   watch → ${watchPort.split('modem')[1] ?? watchPort}   ${DRY ? '[DRY: no broadcast; pass --live for mainnet]' : '[LIVE MAINNET]'}`;
 function cleanup(): void { for (const c of readers) c.kill(); rl.close(); process.exit(0); }
 async function handle(line: string): Promise<void> {
   const cmd = line.trim().toLowerCase();
@@ -284,7 +285,7 @@ async function handle(line: string): Promise<void> {
 }
 
 // ── boot ─────────────────────────────────────────────────────────────
-console.log(`onchain gated-spend — ${DRY ? 'DRY (no broadcast)' : 'LIVE MAINNET'}`);
+console.log(`onchain gated-spend — ${DRY ? 'DRY (no broadcast; pass --live for mainnet)' : 'LIVE MAINNET'}`);
 console.log(`discovered ${ports.length} board(s): ${ports.join(', ') || '(none)'}`);
 if (ports.length < 2 && !DRY) console.log('\x1b[33m⚠ fewer than 2 boards found — pass --inject-port/--watch if needed\x1b[0m');
 console.log(HELP);
