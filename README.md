@@ -42,9 +42,10 @@ Semantos resolves it by pushing a real Bitcoin-Script VM down onto the device:
   needs). The device is the *honest sensor/actuator*, not the ledger.
 
 This is the kit you grab to put that whole stack on a board on your desk.
-It is C6-first today: the public firmware path uses Espressif's WAMR package,
-while the pure mesh state machines are kept behind a small C ABI so they can be
-ported to a Zig core without changing examples.
+It is C6-first today: the public firmware path uses Espressif's WAMR package
+and C ESP-IDF glue, while the pure mesh state machines have been ported to Zig
+behind the same small `cm_*` C ABI. The examples can swap implementations once
+Zig ESP-IDF integration is proven on hardware.
 
 ---
 
