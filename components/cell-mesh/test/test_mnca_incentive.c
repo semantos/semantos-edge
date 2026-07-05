@@ -4,9 +4,8 @@
  * Tests cm_mnca_step, cm_mnca_tile_encode/decode, cm_mnca_tile_hash,
  * and cm_mnca_quorum_update without any IDF or hardware dependency.
  *
- * Compile + run (no IDF needed):
- *   cc -I ../include test_mnca_incentive.c ../src/cell_mnca.c \
- *      -o test_mnca_incentive && ./test_mnca_incentive
+ * Run through the Zig C-ABI harness:
+ *   ../cell-mesh-zig/run-c-abi-tests.sh
  */
 
 #include "cell_mnca.h"

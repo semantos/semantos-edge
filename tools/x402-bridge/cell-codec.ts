@@ -4,7 +4,7 @@
  * A focused reproduction of the canonical 1024-byte cell wire + the
  * actuator_offer.v0 / actuator_activate.v0 payloads, mirroring
  * tools/sign-cell-deck.ts and docs/
- * x402-over-cells.md byte-for-byte. The firmware (cell_wire.c +
+ * x402-over-cells.md byte-for-byte. The firmware (Zig cell_wire ABI +
  * main.c actuator handling) parses exactly these.
  *
  * The bridge is a host process — it holds the wallet key and signs the

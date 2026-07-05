@@ -29,7 +29,7 @@
 // the cert_hash field carried in every cm_channel_commitment_t that uses this
 // relay key.  This binds each payment hop to the specific cert (BRC-108).
 //
-// Pure C, no IDF dependency — host-testable.
+// Zig-backed C ABI, no IDF dependency — host-testable.
 
 #pragma once
 

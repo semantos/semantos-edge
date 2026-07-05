@@ -1,7 +1,7 @@
 // test_cell_rules.c — host-side smoke test for the rules engine.
 //
-// Compile:
-//   cc -I ../include test_cell_rules.c ../src/cell_rules.c ../src/cell_wire.c -o test_cell_rules
+// Run through the Zig C-ABI harness:
+//   ../cell-mesh-zig/run-c-abi-tests.sh
 
 #include "cell_rules.h"
 #include "cell_wire.h"

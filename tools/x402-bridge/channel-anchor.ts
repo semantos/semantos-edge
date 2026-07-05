@@ -7,7 +7,7 @@
  * settlement threshold builds + broadcasts a spending tx that records
  * accumulated device_share vs remaining user_share on chain.
  *
- * channel_id derivation (canonical, matches cell_channel.c hook):
+ * channel_id derivation (canonical, matches the Zig cell_channel ABI hook):
  *   channelId = Buffer.from(fundingTxid, 'hex').subarray(0, 16)
  *   (first 16 bytes of the txid in conventional display/hex order)
  *

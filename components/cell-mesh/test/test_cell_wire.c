@@ -5,8 +5,8 @@
 // back through accessors faithfully. There is no parallel struct — every
 // test operates on uint8_t[1024] directly.
 //
-// Compile:
-//   cc -I ../include test_cell_wire.c ../src/cell_wire.c -o test_cell_wire
+// Run through the Zig C-ABI harness:
+//   ../cell-mesh-zig/run-c-abi-tests.sh
 
 #include "cell_wire.h"
 

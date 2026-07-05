@@ -1,7 +1,7 @@
 // test_cell_frame.c — host-side smoke tests for cell_frame split/reassemble.
 //
-// Compile:
-//   cc -I ../include test_cell_frame.c ../src/cell_frame.c ../src/cell_wire.c -o test_cell_frame
+// Run through the Zig C-ABI harness:
+//   ../cell-mesh-zig/run-c-abi-tests.sh
 
 #include "cell_frame.h"
 #include "cell_wire.h"

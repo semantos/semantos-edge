@@ -26,7 +26,7 @@
 //   12        4   state_len   (u32 LE) bytes in state_bytes
 //   16        N   state_bytes row-major, 1 byte/grid-cell
 //
-// Pure C, no IDF dependency — host-testable (except the radio broadcast
+// Zig-backed C ABI, no IDF dependency — host-testable (except the radio broadcast
 // path which lives in main.c and uses cm_radio_send_cell).
 
 #pragma once
@@ -105,7 +105,7 @@ size_t cm_mnca_tile_encode(const cm_mnca_tile_t *t, const cm_mnca_rule_t *rule,
 int cm_mnca_tile_decode(const uint8_t *payload, size_t payload_len, cm_mnca_tile_t *out);
 
 // Compute the tile state hash (SHA-256 of state_bytes only, not the header).
-// `out_hash` receives 32 bytes.  Uses pure C integer SHA-256 — no mbedTLS.
+// `out_hash` receives 32 bytes.  Uses the Zig core SHA-256 — no mbedTLS.
 void cm_mnca_tile_hash(const cm_mnca_tile_t *t, uint8_t out_hash[32]);
 
 // ── Quorum table ──────────────────────────────────────────────────────────────

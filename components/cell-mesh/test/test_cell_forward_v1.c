@@ -1,10 +1,7 @@
 // test_cell_forward_v1.c — host smoke tests for forward.v1 (channel-gated).
 //
-// Compile:
-//   cc -I ../include test_cell_forward_v1.c \
-//      ../src/cell_forward_v1.c ../src/cell_forward.c \
-//      ../src/cell_channel.c ../src/cell_wire.c \
-//      -o test_cell_forward_v1
+// Run through the Zig C-ABI harness:
+//   ../cell-mesh-zig/run-c-abi-tests.sh
 
 #include "cell_forward_v1.h"
 #include "cell_channel.h"

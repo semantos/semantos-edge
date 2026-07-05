@@ -6,9 +6,8 @@
  * Also tests the full accumulation flow with a txid-derived channel_id and
  * verifies settlement threshold detection at the bridge level.
  *
- * Compile + run (no IDF needed):
- *   cc -I ../include test_cell_channel_onchain.c ../src/cell_channel.c \
- *      ../src/cell_wire.c -o test_cell_channel_onchain && ./test_cell_channel_onchain
+ * Run through the Zig C-ABI harness:
+ *   ../cell-mesh-zig/run-c-abi-tests.sh
  */
 
 #include "cell_channel.h"

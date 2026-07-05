@@ -1,0 +1,10 @@
+# GitHub language stats should show the Semantos edge brain, not the C ABI,
+# ESP-IDF glue, demos, or host control-plane tools wrapped around it.
+components/cell-mesh/include/** linguist-detectable=false
+components/cell-mesh/src/cell_radio.c linguist-detectable=false
+components/cell-mesh/src/cell_sig.c linguist-detectable=false
+components/cell-mesh/test/** linguist-detectable=false
+components/semantos/include/** linguist-detectable=false
+components/semantos/src/** linguist-detectable=false
+examples/** linguist-detectable=false
+tools/** linguist-detectable=false

@@ -113,10 +113,10 @@ instead by adding entries to `semantos_host_call_by_name`.
       gateway. Publish and resolve over MQTT. Store cells in SPIFFS.
       Boot the device, hand it to someone else in the lab, and
       have it integrate into the rest of your setup automatically.
-- [ ] **Zig ESP-IDF integration.** The pure `cell-mesh` modules now have Zig
-      implementations behind the existing `cm_*` C ABI. Wire
-      `components/cell-mesh-zig` into the ESP-IDF component build for C6 while
-      keeping `cell_radio` and `cell_sig` C-facing.
+- [x] **Zig ESP-IDF integration.** The pure `cell-mesh` modules now build from
+      `components/cell-mesh-zig` and link into the ESP-IDF component behind the
+      existing `cm_*` C ABI. `cell_radio` and `cell_sig` stay C-facing boundary
+      glue.
 - [ ] **Second radio.** The C6 has a RISC-V core and 802.15.4. Keep the
       WAMR runtime path, but build a Thread or Zigbee transport under the
       existing network adapter / frame API.

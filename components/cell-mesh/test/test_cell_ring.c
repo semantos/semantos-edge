@@ -3,8 +3,8 @@
 // Pushes synthetic cells (built in-place via accessors, no shadow struct)
 // and asserts quorum-aware counting works correctly.
 //
-// Compile:
-//   cc -I ../include test_cell_ring.c ../src/cell_ring.c ../src/cell_wire.c -o test_cell_ring
+// Run through the Zig C-ABI harness:
+//   ../cell-mesh-zig/run-c-abi-tests.sh
 
 #include "cell_ring.h"
 #include "cell_wire.h"

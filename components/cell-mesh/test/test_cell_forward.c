@@ -1,7 +1,7 @@
 // test_cell_forward.c — host smoke tests for the forward cell + step semantics.
 //
-// Compile:
-//   cc -I ../include test_cell_forward.c ../src/cell_forward.c ../src/cell_wire.c -o test_cell_forward
+// Run through the Zig C-ABI harness:
+//   ../cell-mesh-zig/run-c-abi-tests.sh
 
 #include "cell_forward.h"
 #include "cell_wire.h"

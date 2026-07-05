@@ -11,7 +11,7 @@
 // already provides the primitive; this header will grow a
 // CM_TRIGGER_QUORUM variant when the third XIAO joins the demo.
 //
-// Pure C. No IDF dependency — host-testable. Effects are returned as
+// Zig-backed C ABI. No IDF dependency — host-testable. Effects are returned as
 // values; the caller is responsible for actually dispatching them
 // (toggling GPIO, broadcasting via cell_radio, etc.). This keeps the
 // rules engine independent of any I/O.

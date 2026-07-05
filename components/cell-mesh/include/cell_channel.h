@@ -26,7 +26,7 @@
 //     layer already verifies the cell signature; the wallet/BSV side
 //     would also check the commitment-script signatures on settlement).
 //
-// Pure C, no IDF dependency — host-testable.
+// Zig-backed C ABI, no IDF dependency — host-testable.
 
 #pragma once
 

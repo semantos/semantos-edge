@@ -19,7 +19,7 @@
 // milli-sats internally so a sub-sat-per-second rate (e.g. a 10 W bulb at
 // ~1 sat/sec) accrues smoothly across millisecond ticks.
 //
-// Pure C, no IDF dependency — host-testable.
+// Zig-backed C ABI, no IDF dependency — host-testable.
 
 #pragma once
 

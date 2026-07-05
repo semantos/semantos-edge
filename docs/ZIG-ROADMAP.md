@@ -1,23 +1,24 @@
-# Zig Mesh-Core Roadmap
+# Zig Mesh-Core Architecture
 
-The public kit currently ships `components/cell-mesh` as C because ESP-IDF,
-ESP-NOW, mbedTLS, and WAMR all expose C-shaped integration points. That was the
-fastest path to running hardware demos.
+The public kit now uses Zig for the mesh/state brain. ESP-IDF, ESP-NOW, mbedTLS,
+and WAMR still expose C-shaped integration points, so the firmware keeps a small
+`cm_*` C ABI and a few C glue files. The duplicate C implementation of the pure
+mesh modules has been removed.
 
-`components/cell-mesh-zig` is the seed port. It exports the same `cm_*` C ABI
-for the pure mesh modules already ported, and its C-ABI harness links the
-existing C tests against the Zig static library. It is not wired into the
-ESP-IDF firmware build yet.
+`components/cell-mesh-zig` exports the same `cm_*` C ABI for the pure mesh
+modules. Its C-ABI harness links the existing C tests against the Zig static
+library, and `components/cell-mesh/CMakeLists.txt` links that same Zig archive
+into ESP-IDF builds for ESP32 RISC-V targets.
 
 ```bash
 bun run zig:test
 bun run zig:test:c-abi
 ```
 
-## Current Port Status
+## Current Core Status
 
-These modules already have Zig implementations with existing C tests passing
-against `libcell_mesh_zig.a`:
+These modules are implemented in Zig, exported through the `cm_*` ABI, and
+covered by the C ABI harness:
 
 - `cell_wire`
 - `cell_meter`
@@ -31,13 +32,13 @@ against `libcell_mesh_zig.a`:
 - `cell_rules`
 - `cell_mnca`
 
-The remaining C modules are integration-facing:
+The remaining C files are integration-facing:
 
 - `cell_radio`: ESP-NOW / ESP-IDF transport glue.
 - `cell_sig`: mbedTLS secp256k1 wrappers.
 
-Those should stay C-facing until the Zig ESP-IDF and crypto integration story is
-proven on ESP32-C6 hardware.
+Those can stay C-facing until there is a proven reason to wrap the ESP-IDF and
+mbedTLS APIs directly from Zig. They are boundary glue, not a second mesh core.
 
 The intended architecture is **Zig mesh logic with a stable C ABI shim**:
 
@@ -62,17 +63,16 @@ cell wire, frames, rules, channels, meters, capabilities
 - The same language can eventually cover the cell-engine and mesh-core.
 - Zig can export C ABI functions, preserving ESP-IDF ergonomics.
 
-## Keep C For Now
+## Keep C At The Boundary
 
-These pieces should remain C or C-facing until there is a proven Zig build for
-the target board:
+These pieces remain C or C-facing because they bind directly into vendor APIs:
 
 - ESP-IDF lifecycle glue.
 - ESP-NOW / Wi-Fi callbacks.
 - WAMR native-symbol registration.
 - mbedTLS host import wrappers.
 
-## Port Order
+## Completed Port
 
 1. `cell_wire`: canonical offsets, getters/setters, magic checks. Done.
 2. `cell_frame`: fragmentation and reassembly. Done.
@@ -82,10 +82,13 @@ the target board:
 6. `cell_capability` and `cell_forward_v1/v2`: capability-gated routing. Done.
 7. `cell_mnca`: incentive / settle logic. Done.
 
-Each step should keep the existing `cm_*` ABI and pass the existing C tests
-byte-for-byte before the C implementation is deleted.
+The old C implementations for those modules are intentionally not shipped in
+this repo. The C tests stay because they prove the exported ABI from firmware's
+point of view.
 
 ## Target Policy
 
-The first public Zig target is ESP32-C6. Broader ESP32-family support should not
-be promised until the Zig toolchain story is reliable for those chips.
+The first public Zig firmware target is ESP32-C6. The component maps ESP32
+RISC-V targets to `riscv32-freestanding-none`; broader ESP32-family support
+should not be promised until the Zig toolchain story is reliable for those
+chips.

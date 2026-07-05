@@ -43,7 +43,7 @@
 // (cm_forward_step does not modify it). Unknown verb values are treated as
 // CM_HOP_VERB_NONE — cell still routes normally.
 //
-// Pure C, no IDF dependency — host-testable. The mesh_demo wires this
+// Zig-backed C ABI, no IDF dependency — host-testable. The mesh_demo wires this
 // into the receive callback for end-to-end on-device routing.
 
 #pragma once

@@ -1,7 +1,7 @@
 // test_cell_channel.c — host smoke tests for the payment-channel state machine.
 //
-// Compile:
-//   cc -I ../include test_cell_channel.c ../src/cell_channel.c ../src/cell_wire.c -o test_cell_channel
+// Run through the Zig C-ABI harness:
+//   ../cell-mesh-zig/run-c-abi-tests.sh
 
 #include "cell_channel.h"
 #include "cell_wire.h"

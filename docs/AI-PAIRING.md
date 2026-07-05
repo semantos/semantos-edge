@@ -67,7 +67,7 @@ bun run zig:test and bun run zig:test:c-abi before summarizing the change.
 - Build and flash `hello_cell`.
 - Trace host-import and opcode parity.
 - Explain which pieces are edge primitives and which pieces still live in core.
-- Add focused C wrappers or hostcall-by-name entries.
+- Add focused C ABI boundary wrappers or hostcall-by-name entries.
 - Add docs, tests, and small Zig mesh-core changes.
 - Build gateway-side tools and telemetry harnesses.
 

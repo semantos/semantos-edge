@@ -190,7 +190,7 @@ function signCell(cell: Uint8Array): Uint8Array {
   return new Uint8Array([...r, ...s]);
 }
 
-// ── Channel encoders (match cell_channel.c byte layout) ──────────────
+// ── Channel encoders (match the Zig cell_channel ABI byte layout) ─────
 function encodeChannelOpen(channelId: Uint8Array, peerPubkey: Uint8Array,
                             initialLocktimeMs: bigint, totalCapacity: number): Uint8Array {
   const buf = new Uint8Array(61);

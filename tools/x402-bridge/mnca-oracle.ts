@@ -7,7 +7,7 @@
  *   Response: { valid: boolean, oracle_sig: string (hex) | null, message: string }
  *
  * The oracle re-runs the MNCA rule in TypeScript (identical integer
- * arithmetic to cell_mnca.c) and signs { x, y, gen, next_hash } with
+ * arithmetic to the Zig cell_mnca ABI) and signs { x, y, gen, next_hash } with
  * the bridge wallet key if the transition is valid.
  *
  * This is the "brain oracle" from the MNCA incentives arc:
@@ -22,7 +22,7 @@
 import { createHmac } from 'node:crypto';
 import { PrivateKey } from '@bsv/sdk';
 
-// ── Rule parameters (match CM_MNCA_DEFAULT_RULE in cell_mnca.c) ──────────────
+// ── Rule parameters (match CM_MNCA_DEFAULT_RULE in cell_mnca.zig) ────────────
 interface MncaRule {
   aliveThreshold: number;   // cell >= this is "alive"
   innerRadius: number;      // Moore neighbourhood radius
@@ -47,7 +47,7 @@ const DEFAULT_RULE: MncaRule = {
   ruleId:         'MNCA',
 };
 
-// ── MNCA step (mirrors cm_mnca_step in cell_mnca.c) ──────────────────────────
+// ── MNCA step (mirrors cm_mnca_step in cell_mnca.zig) ────────────────────────
 const TILE_W = 8;
 const TILE_H = 8;
 const TILE_CELLS = TILE_W * TILE_H;
@@ -210,7 +210,7 @@ export function attachMncaOracle(app: { post: Function }, walletWif: string) {
 
 // ── Standalone test (bun run mnca-oracle.ts) ─────────────────────────────────
 if (import.meta.main) {
-  // Initialise seed=12345 with the LCG from cell_mnca.c:
+  // Initialise seed=12345 with the LCG from cell_mnca.zig:
   //   s = s * 1664525u + 1013904223u  (repeated TILE_CELLS times)
   const state0 = new Uint8Array(TILE_CELLS);
   let seed = 12345;

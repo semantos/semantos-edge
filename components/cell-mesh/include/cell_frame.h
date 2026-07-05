@@ -25,7 +25,7 @@
 // fixed-size table until all `frame_count` frames have arrived or a TTL
 // expires. Out-of-order frames are fine; duplicate frames are idempotent.
 //
-// Pure C. No IDF dependency — host-testable. ESP-NOW glue lives in
+// Zig-backed C ABI. No IDF dependency — host-testable. ESP-NOW glue lives in
 // cell_radio.{h,c}.
 
 #pragma once

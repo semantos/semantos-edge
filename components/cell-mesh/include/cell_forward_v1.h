@@ -44,7 +44,7 @@
 // linearity: seq strictly increases, device_share monotone non-decreasing).
 // Channel open is done out-of-band via cellmesh.channel.open.v0.
 //
-// Pure C, no IDF dependency — host-testable.
+// Zig-backed C ABI, no IDF dependency — host-testable.
 
 #pragma once
 

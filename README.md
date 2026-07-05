@@ -42,10 +42,10 @@ Semantos resolves it by pushing a real Bitcoin-Script VM down onto the device:
   needs). The device is the *honest sensor/actuator*, not the ledger.
 
 This is the kit you grab to put that whole stack on a board on your desk.
-It is C6-first today: the public firmware path uses Espressif's WAMR package
-and C ESP-IDF glue, while the pure mesh state machines have been ported to Zig
-behind the same small `cm_*` C ABI. The examples can swap implementations once
-Zig ESP-IDF integration is proven on hardware.
+It is C6-first today: the cell-engine is a Zig kernel compiled to WASM, and the
+mesh/state brain is Zig too. ESP-IDF, WAMR, ESP-NOW, and mbedTLS still meet the
+firmware through a small `cm_*` C ABI and a few C glue files, but there is no
+parallel C implementation of the mesh core.
 
 ---
 
@@ -64,16 +64,12 @@ semantos-edge-kit/
 │   │   │   ├── host_utility.c             log, blocktime, sequence, dispatch
 │   │   │   └── runtime_wamr.c             WAMR backend (public path)
 │   │   ├── CMakeLists.txt / Kconfig / idf_component.yml
-│   ├── cell-mesh/                 current C ABI for the networking + policy stack
-│       ├── cell_frame / cell_wire / cell_radio     framing + ESP-NOW transport
-│       ├── cell_forward (v1/v2)                     capability-gated multicast forwarding
-│       ├── cell_channel                             payment-channel state on-device
-│       ├── cell_capability                          capability certificates
-│       ├── cell_rules                               hot-swappable signed swarm policy
-│       ├── cell_mnca                                MNCA incentive / settle logic
-│       ├── cell_meter                               on-device metered-flow draining
-│       └── cell_sig / cell_ring                     frame signatures + ring buffer
-│   └── cell-mesh-zig/             Zig implementation of the pure cm_* mesh core
+│   ├── cell-mesh/                 stable cm_* C ABI + ESP-NOW/signature glue
+│   │   ├── include/               C-callable headers for firmware/examples
+│   │   ├── src/cell_radio.c       ESP-NOW / ESP-IDF transport boundary
+│   │   └── src/cell_sig.c         mbedTLS secp256k1 signature boundary
+│   └── cell-mesh-zig/             Zig mesh core: wire, frames, rules, channels,
+│                                  forwarding, meters, capabilities, MNCA
 ├── examples/
 │   ├── hello_cell/               minimal: prove the VM loads and runs
 │   ├── mesh_demo/                multi-board swarm, 20 Hz telemetry, signed deck
@@ -89,7 +85,7 @@ semantos-edge-kit/
     ├── HOST_IMPORTS.md          the 12 host imports the kernel calls
     ├── OPCODE-PARITY.md         keeping edge opcodes matched to core
     ├── RESEARCH-COLLABORATION.md academic / lab collaboration brief
-    ├── ZIG-ROADMAP.md           plan for a Zig mesh-core with C ABI shim
+    ├── ZIG-ROADMAP.md           Zig mesh-core architecture and target policy
     ├── SMART-CITY-THROUGHPUT.md smart-city throughput positioning
     ├── VM-ENFORCEMENT.md        what scripts actually accept/reject
     ├── CHALLENGE.md             "fun ideas for a Sunday" build list
@@ -179,11 +175,15 @@ the kit is intentionally fail-closed.
 
 ## Zig mesh core
 
-The current firmware still uses the C `components/cell-mesh` component. The
-Zig core lives in `components/cell-mesh-zig`: the pure byte/state modules export
-the same `cm_*` C ABI and are verified by linking the existing C tests against
-the Zig static library. ESP-NOW radio glue and mbedTLS secp256k1 wrappers remain
-C-facing until Zig ESP-IDF integration is proven on ESP32-C6 hardware.
+Firmware that uses `components/cell-mesh` now links the Zig core from
+`components/cell-mesh-zig`. The pure byte/state modules export the same `cm_*`
+C ABI and are verified by linking the existing C ABI tests against the Zig
+static library. ESP-NOW radio glue and mbedTLS secp256k1 wrappers remain
+C-facing because those are ESP-IDF integration boundaries, not the mesh brain.
+
+For `mesh_demo` / `cold_chain` builds, install Zig 0.15+ and keep `zig` on
+`PATH`; the ESP-IDF component builds the Zig archive as part of the C6 firmware
+build.
 
 ```bash
 bun run zig:test

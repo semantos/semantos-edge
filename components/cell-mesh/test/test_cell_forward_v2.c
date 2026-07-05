@@ -1,10 +1,7 @@
 // test_cell_forward_v2.c — host test for forward.v2 encode/decode + burst step.
 //
-// Compile and run (no hardware, no IDF):
-//   gcc -std=c11 -I../include \
-//       ../src/cell_forward_v2.c ../src/cell_forward.c \
-//       ../src/cell_wire.c ../src/cell_channel.c \
-//       test_cell_forward_v2.c -o test_fwdv2_run && ./test_fwdv2_run
+// Run through the Zig C-ABI harness:
+//   ../cell-mesh-zig/run-c-abi-tests.sh
 
 #include "cell_forward_v2.h"
 #include "cell_wire.h"

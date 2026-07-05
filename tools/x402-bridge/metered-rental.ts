@@ -51,7 +51,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let channel: { id: Uint8Array; seq: number; deviceShare: number } | null = null;
 
-// ── channel cell encoders (match cell_channel.c byte layouts) ───────
+// ── channel cell encoders (match the Zig cell_channel ABI byte layouts) ─
 function encodeOpen(id: Uint8Array): Uint8Array {            // 61 bytes
   const b = new Uint8Array(61);
   b.set(id, 0); b.set(WALLET_PUBKEY, 16); writeU64LE(b, 49, BigInt(Date.now())); writeU32LE(b, 57, CAPACITY);

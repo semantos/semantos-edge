@@ -38,7 +38,8 @@ handle smart-city-scale settlement?
   - `x402-bridge`: payment-triggered device actuation flow.
   - `sign-cell-deck.ts`: pre-signs cells so devices verify/broadcast rather
     than holding wallet keys.
-- A Zig implementation of the pure mesh-state core behind the existing C ABI.
+- A Zig mesh-state core behind the existing C ABI, with C kept to ESP-IDF /
+  mbedTLS boundary glue.
 
 ## Useful first experiments
 

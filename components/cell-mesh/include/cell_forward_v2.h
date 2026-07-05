@@ -46,7 +46,7 @@
 //   forward.v1:  320B routing header → 448B inner payload headroom
 //   forward.v2:    24B primary header → 744B inner payload headroom  (+296 bytes)
 //
-// Pure C, no IDF dependency — host-testable.
+// Zig-backed C ABI, no IDF dependency — host-testable.
 
 #pragma once
 
