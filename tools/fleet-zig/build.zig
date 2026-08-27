@@ -61,6 +61,20 @@ pub fn build(b: *std.Build) void {
     recovery_mod.addImport("identity", identity_mod);
     recovery_mod.addImport("store", store_mod);
 
+    const scim_mod = b.addModule("scim", .{
+        .root_source_file = b.path("src/scim.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    scim_mod.addImport("identity", identity_mod);
+    scim_mod.addImport("store", store_mod);
+
+    const scim_wire_mod = b.addModule("scim_wire", .{
+        .root_source_file = b.path("src/scim_wire.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Conformance against the SDK's pinned golden vector. The vector is
     // embedded rather than read at runtime so the test cannot silently pass by
     // failing to find it.
@@ -77,6 +91,8 @@ pub fn build(b: *std.Build) void {
     conformance.root_module.addImport("store", store_mod);
     conformance.root_module.addImport("cert", cert_mod);
     conformance.root_module.addImport("recovery", recovery_mod);
+    conformance.root_module.addImport("scim", scim_mod);
+    conformance.root_module.addImport("scim_wire", scim_wire_mod);
     conformance.root_module.addAnonymousImport("golden", .{
         .root_source_file = b.path("vectors/cross-impl-derivation.golden.json"),
     });
@@ -129,4 +145,5 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exporter);
     const run_export = b.addRunArtifact(exporter);
     b.step("export-recipe", "print a recovery recipe on stdout").dependOn(&run_export.step);
+
 }

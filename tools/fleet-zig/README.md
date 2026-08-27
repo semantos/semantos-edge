@@ -3,13 +3,13 @@
 Plexus key derivation in Zig, on [bsvz](https://github.com/b-open-io/bsvz).
 
 ```bash
-zig build test --summary all     # 45 conformance tests against the SDK's oracle
+zig build test --summary all     # 63 conformance tests against the SDK's oracle
 zig build hw                     # drive two real ESP32-C6 boards
 ```
 
-**M1–M5 of the Zig control plane, complete, plus recovery.** Derivation,
-certificate ids, the store, cert issuance, the hardware proof re-run end to end
-from Zig — and recovery recipes in both directions. The port
+**The Zig control plane, complete.** Derivation, certificate ids, the store,
+cert issuance, the hardware proof re-run end to end from Zig, recovery recipes in
+both directions, and SCIM mirroring from an existing IdP. The port
 reproduces the Plexus SDK byte-for-byte, checked against the SDK's own vectors
 rather than against expectations written here. From `(rootEmail, rootSalt)` alone
 it recomputes the root certificate id and every id in the vector's counter
@@ -49,9 +49,69 @@ private keys on device" structural rather than remembered.
 | `cert.signCell` / `verifyCell` | raw r‖s, low-S, over a single SHA-256 |
 | `recovery.exportRecipe(...)` | paths + high-water marks, no key material |
 | `recovery.importRecipe(...)` | rebuild a fleet from a recipe and the root |
+| `scim.Mirror` | an IdP's directory projected onto the derivation tree |
+| `scim_wire.parse(...)` | what Okta and Entra actually send, in either dialect |
 
 `plexus-kdf-v2` and `v3` are in the vector and deliberately not ported — v1 is
 what a fleet uses.
+
+## SCIM mirroring
+
+The fleet is **not** the source of truth. Okta or Entra is, and this mirrors what
+it pushes — nobody rips out their directory, and a control plane that demanded to
+own identity would never get deployed. What it adds is the half SCIM cannot do.
+
+When an IdP deactivates someone it sends `active: false`. That is **advisory**: a
+flag every downstream app has to be trusted to honour, which sessions and tokens
+already issued survive. Here it **burns the seat** — the index is consumed, so the
+next person into it derives a different key and the departing holder's position
+is never reissued. Reactivation therefore gives a **new** seat, not the old one
+back; SCIM has no opinion on this and returning the old index would un-retire a
+burned one.
+
+What burning does *not* do is reach access already in the field. Spending the
+departing holder's capability grants is a separate act. Burning governs who comes
+next.
+
+| SCIM | fleet |
+|---|---|
+| Group | a zone, `deriveChild(root, "zone", …)` |
+| User | a member, `deriveChild(zone, "member", …)` |
+| `externalId` | the stable handle a position is remembered by |
+
+Identity is keyed on `externalId`, never `userName` — people change their names,
+and a rename must not move anyone's key.
+
+### The trap this module exists for
+
+Okta deactivates with **no `path`** and `value` as an **object**:
+
+```json
+{"Operations":[{"op":"replace","value":{"active":false}}]}
+```
+
+Entra sends the other shape — `path` present, `value` a bare boolean, `op`
+capitalised. Both are RFC-legal: §3.5.2.3 makes `path` optional. A provider
+written for one dialect does not *error* on the other; it parses the request,
+recognises nothing, and returns **200 with the user still active**. Every
+offboarding fails silently while the IdP reports success.
+
+Both dialects are parsed here, and the tests carry both payloads verbatim. Two
+more that bite the same way: Okta **never** sends `DELETE /Users` (deprovisioning
+is always the soft delete), and integrations built with the App Integration
+Wizard send **PUT for everything** including deactivation, with no way to
+reconfigure them.
+
+**Deliberately not implemented:** filtering beyond the `userName eq "…"`
+existence probe, pagination, bulk, ETags, `/Schemas`, `/ResourceTypes`,
+`/ServiceProviderConfig` (Okta does not call it). Stated rather than stubbed — a
+stub that returns 200 is exactly how the trap above happens. An unsupported
+filter is *refused*, because answering it with an empty list tells the IdP the
+user does not exist and it will cheerfully create a duplicate.
+
+There is no HTTP server here yet: `scim_wire` parses and renders, and binding it
+to `std.http.Server` is the remaining step. Zig 0.15's server has no request
+timeout, which is worth knowing before it faces the internet.
 
 ## Recovery, in both directions
 
@@ -248,6 +308,15 @@ mutation-tested — each of these was applied and the suite caught it:
 | recovery takes the last sibling row, not the max | yes |
 | recovery does not verify a path re-derives | yes |
 | recovery floor off by one | yes |
+| drop Okta's pathless PATCH branch | yes |
+| drop Entra's path-addressed branch | yes |
+| match `op` case-sensitively | yes |
+| key identity on userName not externalId | yes |
+| PUT not treated as a replacement | yes |
+| ListResponse totals as strings | yes |
+| error `status` as an integer | yes |
+| deactivate does not burn | yes |
+| reactivation reuses the old seat | yes |
 
 Three of those rows say "after a test was added", and they are the honest part of
 this table. Two store mutations and one cert mutation initially survived: `raise`-vs-`set` was

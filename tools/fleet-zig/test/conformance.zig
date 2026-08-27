@@ -1367,3 +1367,375 @@ test "recovery: importing the same recipe twice is a no-op, not an error" {
     _ = try recovery.importRecipe(a, &rebuilt, email, salt, recipe);
     try std.testing.expectEqual(first, try rebuilt.highWaterMark(&root.cert_id, "zone", 6));
 }
+
+// ── SCIM mirroring ───────────────────────────────────────────────────────────
+
+const scim = @import("scim");
+
+const SCIM_EMAIL = "scim@fleet.example";
+const SCIM_SALT = "scim-salt-v1";
+
+fn openMirror(a: std.mem.Allocator, s: *Store) !scim.Mirror {
+    return scim.Mirror.init(a, s, SCIM_EMAIL, SCIM_SALT);
+}
+
+test "scim: a joiner gets a seat, and a retried create returns the same one" {
+    // SCIM clients retry. A retried create that allocated a second index would
+    // hand one person two identities and burn a slot for nobody.
+    const a = std.testing.allocator;
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    var m = try openMirror(a, &s);
+    defer m.deinit();
+
+    _ = try m.putZone("grp-eng", "Engineering");
+    const first = try m.putUser("okta-0001", "grp-eng", "Alice", true);
+    try std.testing.expectEqual(scim.Outcome.created, first.outcome);
+    try std.testing.expectEqual(@as(u64, 0), first.seat.?.child_index);
+
+    const retry = try m.putUser("okta-0001", "grp-eng", "Alice", true);
+    try std.testing.expectEqual(scim.Outcome.unchanged, retry.outcome);
+    try std.testing.expectEqualStrings(&first.seat.?.cert_id, &retry.seat.?.cert_id);
+    try std.testing.expectEqual(@as(usize, 1), m.activeSeats());
+}
+
+test "scim: identity is keyed on externalId, so a rename does not move a key" {
+    // userName changes when people marry. externalId is the IdP's immutable
+    // handle, and keying on anything else would re-derive somebody mid-career.
+    const a = std.testing.allocator;
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    var m = try openMirror(a, &s);
+    defer m.deinit();
+
+    _ = try m.putZone("grp-eng", "Engineering");
+    const before = try m.putUser("okta-0001", "grp-eng", "Alice Smith", true);
+    const after = try m.putUser("okta-0001", "grp-eng", "Alice Nakamura", true);
+    try std.testing.expectEqual(scim.Outcome.unchanged, after.outcome);
+    try std.testing.expectEqualStrings(&before.seat.?.public_key_hex, &after.seat.?.public_key_hex);
+}
+
+test "scim: active=false burns the seat - the leaver case" {
+    const a = std.testing.allocator;
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    var m = try openMirror(a, &s);
+    defer m.deinit();
+
+    const zone = try m.putZone("grp-eng", "Engineering");
+    const alice = try m.putUser("okta-0001", "grp-eng", "Alice", true);
+    try std.testing.expectEqual(@as(u64, 0), alice.seat.?.child_index);
+
+    const gone = try m.putUser("okta-0001", "grp-eng", "Alice", false);
+    try std.testing.expectEqual(scim.Outcome.deactivated_seat_burned, gone.outcome);
+    try std.testing.expect(gone.seat == null);
+    try std.testing.expectEqual(@as(usize, 0), m.activeSeats());
+
+    // The seat was burned, so the next joiner lands past it rather than on it.
+    const bob = try m.putUser("okta-0002", "grp-eng", "Bob", true);
+    try std.testing.expectEqual(@as(u64, 2), bob.seat.?.child_index);
+    try std.testing.expect(!std.mem.eql(u8, &alice.seat.?.public_key_hex, &bob.seat.?.public_key_hex));
+    _ = zone;
+}
+
+test "scim: a repeated deactivate does not burn twice" {
+    const a = std.testing.allocator;
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    var m = try openMirror(a, &s);
+    defer m.deinit();
+
+    const zone = try m.putZone("grp-eng", "Engineering");
+    _ = try m.putUser("okta-0001", "grp-eng", "Alice", true);
+    _ = try m.putUser("okta-0001", "grp-eng", "Alice", false);
+    const mark = try s.highWaterMark(&zone.cert_id, scim.member_resource, scim.child_flag);
+
+    const again = try m.putUser("okta-0001", "grp-eng", "Alice", false);
+    try std.testing.expectEqual(scim.Outcome.already_inactive, again.outcome);
+    // Burning on every replayed deactivate would walk the allocator away for
+    // free, which an IdP retry loop would do enthusiastically.
+    try std.testing.expectEqual(mark, try s.highWaterMark(&zone.cert_id, scim.member_resource, scim.child_flag));
+}
+
+test "scim: reactivation gives a NEW seat, not the old one back" {
+    // SCIM has no opinion here; it is provider-defined. Returning the old index
+    // would un-retire a burned one, which is the whole point of burning.
+    const a = std.testing.allocator;
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    var m = try openMirror(a, &s);
+    defer m.deinit();
+
+    _ = try m.putZone("grp-eng", "Engineering");
+    const first = try m.putUser("okta-0001", "grp-eng", "Alice", true);
+    const key_before = first.seat.?.public_key_hex;
+    _ = try m.putUser("okta-0001", "grp-eng", "Alice", false);
+
+    const back = try m.putUser("okta-0001", "grp-eng", "Alice", true);
+    try std.testing.expectEqual(scim.Outcome.reactivated_new_seat, back.outcome);
+    try std.testing.expect(back.seat.?.child_index > first.seat.?.child_index);
+    try std.testing.expect(!std.mem.eql(u8, &key_before, &back.seat.?.public_key_hex));
+}
+
+test "scim: a user created already-inactive is not given a seat at all" {
+    // Nothing was issued, so there is nothing to burn - and recording a seat
+    // would hand out an index the IdP has already said should not exist.
+    const a = std.testing.allocator;
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    var m = try openMirror(a, &s);
+    defer m.deinit();
+
+    const zone = try m.putZone("grp-eng", "Engineering");
+    const res = try m.putUser("okta-0009", "grp-eng", "Never Started", false);
+    try std.testing.expectEqual(scim.Outcome.already_inactive, res.outcome);
+    try std.testing.expectEqual(@as(usize, 0), m.activeSeats());
+    try std.testing.expectEqual(
+        @as(u64, 0),
+        try s.highWaterMark(&zone.cert_id, scim.member_resource, scim.child_flag),
+    );
+}
+
+test "scim: zones are independent, and a group is idempotent too" {
+    const a = std.testing.allocator;
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    var m = try openMirror(a, &s);
+    defer m.deinit();
+
+    const eng = try m.putZone("grp-eng", "Engineering");
+    const eng_again = try m.putZone("grp-eng", "Engineering (renamed)");
+    try std.testing.expectEqualStrings(&eng.cert_id, &eng_again.cert_id);
+
+    _ = try m.putZone("grp-fin", "Finance");
+    _ = try m.putUser("okta-0001", "grp-eng", "Alice", true);
+    _ = try m.putUser("okta-0001", "grp-eng", "Alice", false); // burn in eng
+
+    // Finance is untouched by Engineering's churn.
+    const carol = try m.putUser("okta-0003", "grp-fin", "Carol", true);
+    try std.testing.expectEqual(@as(u64, 0), carol.seat.?.child_index);
+}
+
+test "scim: an unknown group is refused rather than silently rooted" {
+    const a = std.testing.allocator;
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    var m = try openMirror(a, &s);
+    defer m.deinit();
+    try std.testing.expectError(
+        scim.Error.ZoneNotFound,
+        m.putUser("okta-0001", "grp-nope", "Nobody", true),
+    );
+}
+
+test "scim: the mirrored fleet survives a recovery round trip" {
+    // The two halves have to compose: a fleet built by mirroring an IdP must
+    // still be rebuildable from a recipe, burns included.
+    const a = std.testing.allocator;
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    var m = try openMirror(a, &s);
+    defer m.deinit();
+
+    _ = try m.putZone("grp-eng", "Engineering");
+    _ = try m.putUser("okta-0001", "grp-eng", "Alice", true);
+    _ = try m.putUser("okta-0002", "grp-eng", "Bob", true);
+    _ = try m.putUser("okta-0001", "grp-eng", "Alice", false); // burn
+    const survivor = m.lookup("okta-0002").?;
+
+    const root = try identity.rootIdentity(a, SCIM_EMAIL, SCIM_SALT);
+    const recipe = try recovery.exportRecipe(a, &s, &root.cert_id, SCIM_EMAIL);
+    defer a.free(recipe);
+
+    var rebuilt = Store.initMemory(a);
+    defer rebuilt.deinit();
+    _ = try recovery.importRecipe(a, &rebuilt, SCIM_EMAIL, SCIM_SALT, recipe);
+
+    // Bob still derives to the same key...
+    const zone2 = try identity.deriveChildIdentity(a, SCIM_EMAIL, SCIM_SALT, "root", scim.zone_resource, scim.child_flag, 0);
+    defer zone2.deinit(a);
+    const bob2 = try identity.deriveChildIdentity(a, SCIM_EMAIL, SCIM_SALT, zone2.derivation_path, scim.member_resource, scim.child_flag, survivor.child_index);
+    defer bob2.deinit(a);
+    try std.testing.expectEqualStrings(&survivor.public_key_hex, &bob2.public_key_hex);
+
+    // ...and Alice's burned seat is still burned after the rebuild.
+    try std.testing.expectEqual(
+        @as(u64, 3),
+        try rebuilt.allocateIndex(&zone2.cert_id, scim.member_resource, scim.child_flag),
+    );
+}
+
+// ── SCIM wire dialects ───────────────────────────────────────────────────────
+//
+// The payloads below are the shapes Okta and Entra actually send, verbatim.
+// They are not paraphrases of RFC 7644, because the two vendors disagree in the
+// one place where being wrong is silent.
+
+const wire = @import("scim_wire");
+
+test "scim wire: OKTA deactivation - no path, value is an object" {
+    // The trap. A provider that only handles path-addressed operations parses
+    // this, recognises nothing, and returns 200 with the user still active -
+    // so every offboarding fails while the IdP reports success.
+    const a = std.testing.allocator;
+    const body =
+        \\{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        \\ "Operations":[{"op":"replace","value":{"active":false}}]}
+    ;
+    var r = try wire.parse(a, "PATCH", "/scim/v2/Users/abc123", "", body);
+    defer r.deinit(a);
+
+    switch (r.intent) {
+        .set_user_active => |s| {
+            try std.testing.expectEqualStrings("abc123", s.id);
+            try std.testing.expectEqual(false, s.active);
+        },
+        else => return error.WrongIntent,
+    }
+}
+
+test "scim wire: ENTRA deactivation - path-addressed, bare boolean, capital op" {
+    const a = std.testing.allocator;
+    const body =
+        \\{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        \\ "Operations":[{"op":"Replace","path":"active","value":false}]}
+    ;
+    var r = try wire.parse(a, "PATCH", "/scim/v2/Users/abc123", "", body);
+    defer r.deinit(a);
+
+    switch (r.intent) {
+        .set_user_active => |s| try std.testing.expectEqual(false, s.active),
+        else => return error.WrongIntent,
+    }
+}
+
+test "scim wire: reactivation parses in both dialects too" {
+    const a = std.testing.allocator;
+    const okta = "{\"Operations\":[{\"op\":\"replace\",\"value\":{\"active\":true}}]}";
+    const entra = "{\"Operations\":[{\"op\":\"Replace\",\"path\":\"active\",\"value\":true}]}";
+    for ([_][]const u8{ okta, entra }) |body| {
+        var r = try wire.parse(a, "PATCH", "/scim/v2/Users/u1", "", body);
+        defer r.deinit(a);
+        switch (r.intent) {
+            .set_user_active => |s| try std.testing.expectEqual(true, s.active),
+            else => return error.WrongIntent,
+        }
+    }
+}
+
+test "scim wire: an Okta create parses, and the legacy password field is ignored" {
+    const a = std.testing.allocator;
+    const body =
+        \\{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],
+        \\ "userName":"alice@example.com","externalId":"00ujl29u0le5T6Aj10h7",
+        \\ "name":{"givenName":"Alice","familyName":"Nakamura","formatted":"Alice Nakamura"},
+        \\ "emails":[{"primary":true,"value":"alice@example.com","type":"work"}],
+        \\ "password":"placeholder-not-a-credential","active":true}
+    ;
+    var r = try wire.parse(a, "POST", "/scim/v2/Users", "", body);
+    defer r.deinit(a);
+
+    switch (r.intent) {
+        .create_user => |u| {
+            // Keyed on externalId, the IdP's immutable handle - not userName.
+            try std.testing.expectEqualStrings("00ujl29u0le5T6Aj10h7", u.external_id);
+            try std.testing.expectEqualStrings("alice@example.com", u.user_name);
+            try std.testing.expectEqualStrings("Alice Nakamura", u.display_name);
+            try std.testing.expect(u.active);
+        },
+        else => return error.WrongIntent,
+    }
+    // Okta sends `password` on every create even with sync off. Nothing in the
+    // parsed intent should carry it.
+    const dump = try std.fmt.allocPrint(a, "{any}", .{r.intent});
+    defer a.free(dump);
+    try std.testing.expect(std.mem.indexOf(u8, dump, "placeholder") == null);
+}
+
+test "scim wire: PUT carries the same meaning as PATCH - the AIW path" {
+    // Integrations built with the App Integration Wizard send PUT for
+    // everything, deactivation included, and cannot be reconfigured. A
+    // PATCH-only provider silently never offboards those tenants.
+    const a = std.testing.allocator;
+    const body =
+        \\{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],
+        \\ "userName":"alice@example.com","externalId":"00ujl29u0le5T6Aj10h7","active":false}
+    ;
+    var r = try wire.parse(a, "PUT", "/scim/v2/Users/abc123", "", body);
+    defer r.deinit(a);
+
+    switch (r.intent) {
+        .replace_user => |u| {
+            try std.testing.expectEqualStrings("abc123", u.id);
+            try std.testing.expectEqual(false, u.fields.active);
+        },
+        else => return error.WrongIntent,
+    }
+}
+
+test "scim wire: the existence probe Okta sends before every create" {
+    const a = std.testing.allocator;
+    var r = try wire.parse(
+        a,
+        "GET",
+        "/scim/v2/Users",
+        "filter=userName%20eq%20%22alice%40example.com%22&startIndex=1",
+        "",
+    );
+    defer r.deinit(a);
+    switch (r.intent) {
+        .find_user_by_username => |u| try std.testing.expectEqualStrings("alice@example.com", u),
+        else => return error.WrongIntent,
+    }
+}
+
+test "scim wire: an unsupported filter is refused, not answered with an empty list" {
+    // Returning an empty ListResponse to a filter you did not understand tells
+    // the IdP the user does not exist - and it will cheerfully create a
+    // duplicate. Refusing is the safe failure.
+    try std.testing.expectError(wire.Error.UnsupportedFilter, wire.parseUserNameFilter("emails.value eq \"a@b.c\""));
+    try std.testing.expectError(wire.Error.UnsupportedFilter, wire.parseUserNameFilter("userName eq \"\""));
+    try std.testing.expectEqualStrings("alice", try wire.parseUserNameFilter("userName eq \"alice\""));
+    // Okta lowercases inconsistently across versions.
+    try std.testing.expectEqualStrings("alice", try wire.parseUserNameFilter("username eq \"alice\""));
+}
+
+test "scim wire: DELETE /Users is refused - Okta never sends one" {
+    // Deprovisioning is always active=false. A provider waiting for a DELETE
+    // waits forever, so treating one as the offboarding signal would be a
+    // design built on an event that never arrives.
+    const a = std.testing.allocator;
+    try std.testing.expectError(
+        wire.Error.UnsupportedOperation,
+        wire.parse(a, "DELETE", "/scim/v2/Users/abc123", "", "{}"),
+    );
+}
+
+test "scim wire: responses carry what Okta's conformance suite asserts" {
+    const a = std.testing.allocator;
+    const user = try wire.renderUser(a, "seat-1", "00ujl29", "alice@example.com", "Alice", true);
+    defer a.free(user);
+    // Non-empty id, the core User schema urn, and meta.resourceType. An empty
+    // body fails the whole provisioning job with an admin-visible error.
+    try std.testing.expect(std.mem.indexOf(u8, user, "\"id\":\"seat-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, user, wire.user_schema) != null);
+    try std.testing.expect(std.mem.indexOf(u8, user, "\"resourceType\":\"User\"") != null);
+
+    const list = try wire.renderList(a, &.{user});
+    defer a.free(list);
+    // Integers, not strings - the conformance suite rejects strings, and a
+    // rejected probe means a duplicate user.
+    try std.testing.expect(std.mem.indexOf(u8, list, "\"totalResults\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, list, "\"itemsPerPage\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, list, "\"startIndex\":1") != null);
+
+    const empty = try wire.renderList(a, &.{});
+    defer a.free(empty);
+    try std.testing.expect(std.mem.indexOf(u8, empty, "\"totalResults\":0") != null);
+
+    const err = try wire.renderError(a, 409, "userName already exists");
+    defer a.free(err);
+    // RFC 7644 requires status as a STRING; Okta's own examples show an
+    // integer. A string satisfies both.
+    try std.testing.expect(std.mem.indexOf(u8, err, "\"status\":\"409\"") != null);
+}
