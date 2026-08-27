@@ -325,9 +325,15 @@ function buildForwardV2PayloadA(
   flowId: Uint8Array,       // 16 bytes
   hopVerb: number,
   segmentCount: number,     // total_hops = segments_remaining at source
-  innerPayload: Uint8Array, // ≤744 bytes
+  innerPayload: Uint8Array, // ≤712 bytes
+  routingDigest: Uint8Array,// SHA-256 of the whole 1024-byte Cell B
 ): Uint8Array {
-  const V2_HEADER = 24;
+  // 24 + 32. Cell A is signed and Cell B is not, and Cell B carries the route
+  // and the payment commitments — so Cell A commits to Cell B's exact bytes and
+  // the origin's signature covers the route transitively. Cell B must therefore
+  // be minted BEFORE Cell A.
+  const V2_HEADER = 56;
+  if (routingDigest.length !== 32) throw new Error('routingDigest must be 32 bytes');
   const buf = new Uint8Array(V2_HEADER + innerPayload.length);
   buf.set(flowId.subarray(0, 16), 0);               // flow_id
   buf[16] = 0;                                       // hop_index
@@ -335,6 +341,7 @@ function buildForwardV2PayloadA(
   buf[18] = hopVerb;
   buf[19] = 0x01;                                    // CM_FWD_V2_FLAG_ROUTING_CONT
   writeU32LE(buf, 20, innerPayload.length);          // inner_payload_len
+  buf.set(routingDigest, 24);                        // routing_digest
   if (innerPayload.length > 0) buf.set(innerPayload, V2_HEADER);
   return buf;
 }
@@ -834,18 +841,24 @@ const server = Bun.serve({
         const flowId = sha256(seed).subarray(0, 16);
 
         // Build Cell A and Cell B payloads
-        const payloadA = buildForwardV2PayloadA(flowId, hopVerb, 2 /* B+C */, innerPayload);
-        const payloadB = buildForwardV2PayloadB(flowId, [MAC_B, MAC_C], commitments);
-
-        // Sign Cell A with the BRC-42 relay key; Cell B is unsigned (routing mutates)
+        // Cell B FIRST. Cell A commits to Cell B's exact bytes, so B must exist
+        // before A can be built — the route and the payment commitments live in
+        // B, and this is what puts them under A's signature.
         const relayKey    = getRelayKey(chHex);
         const relayWallet = new PrivateKey(Buffer.from(relayKey.sk).toString('hex'), 16);
         // Both on the relay rail — the same flag the capability cert carries,
         // or cm_cap_lookup misses and the device drops them.
-        const cellA = mintCell(TYPES.forwardV2,     payloadA, OWNER, BigInt(Date.now()), domainForType(TYPES.forwardV2));
-        const cellB = mintCell(TYPES.routingContV0, payloadB, OWNER, BigInt(Date.now()), domainForType(TYPES.routingContV0));
-        const sigA  = signCell(cellA, relayWallet);
-        const sigB  = new Uint8Array(64);  // Cell B unsigned (zeros)
+        const payloadB = buildForwardV2PayloadB(flowId, [MAC_B, MAC_C], commitments);
+        const cellB    = mintCell(TYPES.routingContV0, payloadB, OWNER, BigInt(Date.now()), domainForType(TYPES.routingContV0));
+
+        // The device compares this against SHA-256 of the whole 1024-byte Cell B
+        // it receives, so hash the finished cell, not the payload.
+        const routingDigest = sha256(cellB);
+
+        const payloadA = buildForwardV2PayloadA(flowId, hopVerb, 2 /* B+C */, innerPayload, routingDigest);
+        const cellA    = mintCell(TYPES.forwardV2, payloadA, OWNER, BigInt(Date.now()), domainForType(TYPES.forwardV2));
+        const sigA     = signCell(cellA, relayWallet);
+        const sigB     = new Uint8Array(64);  // Cell B carries no signature of its own
 
         await injectCellSig(cellA, sigA, fwdInjectPort);
         // 2500 ms, not 20. Both hop-0 boards logged "routing.cont: no matching

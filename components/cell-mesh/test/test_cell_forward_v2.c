@@ -52,11 +52,56 @@ static cm_channel_commitment_t make_commitment(uint8_t chan_byte, uint32_t seq) 
 
 static void test_budget(void) {
     printf("  test_budget\n");
-    CHECK(CM_FORWARD_V2_MAX_INNER_BYTES == 744u);
+    // 712, not 744: Cell A gave up 32 bytes to carry a SHA-256 of Cell B.
+    // That is the price of the route being covered by Cell A's signature —
+    // segments[] and hop_commitments[] live in the unsigned Cell B, so without
+    // the digest "Cell A verified" said nothing about where the cell went or
+    // what it claimed along the way.
+    CHECK(CM_FORWARD_V2_MAX_INNER_BYTES == 712u);
     CHECK(CM_ROUTING_CONT_USED_BYTES    == 320u);
-    // Forward.v2 gives 744B inner — 296 more than forward.v1's 448B
-    CHECK(CM_FORWARD_V2_MAX_INNER_BYTES - 448u == 296u);
-    CHECK(CM_FORWARD_V2_HEADER_BYTES == 24u);
+    // Still 264 bytes more inner payload than forward.v1's 448B.
+    CHECK(CM_FORWARD_V2_MAX_INNER_BYTES - 448u == 264u);
+    CHECK(CM_FORWARD_V2_HEADER_BYTES == 56u);
+    CHECK(CM_FORWARD_V2_ROUTING_DIGEST_OFF == 24u);
+    // The digest must sit inside the header, not overlap the inner payload.
+    CHECK(CM_FORWARD_V2_ROUTING_DIGEST_OFF + 32u == CM_FORWARD_V2_HEADER_BYTES);
+}
+
+static void test_routing_digest_round_trips(void) {
+    printf("  test_routing_digest_round_trips\n");
+    cm_forward_v2_t a; memset(&a, 0, sizeof(a));
+    memset(a.flow_id, 0x11, 16);
+    a.hop_index = 0; a.total_hops = 2; a.hop_verb = CM_HOP_VERB_NONE;
+    a.flags = CM_FWD_V2_FLAG_ROUTING_CONT;
+    for (int i = 0; i < 32; i++) a.routing_digest[i] = (uint8_t)(0xa0 + i);
+    static const char inner[] = "payload";
+    memcpy(a.inner_payload, inner, sizeof(inner) - 1);
+    a.inner_payload_len = sizeof(inner) - 1;
+
+    uint8_t buf[CM_PAYLOAD_SIZE]; size_t used = 0;
+    CHECK(cm_forward_v2_encode(&a, buf, &used) == 0);
+    CHECK(used == CM_FORWARD_V2_HEADER_BYTES + (sizeof(inner) - 1));
+
+    // The digest lands at its declared offset — a reader that hard-codes 24
+    // and a writer that moves it would otherwise diverge silently.
+    for (int i = 0; i < 32; i++) {
+        CHECK(buf[CM_FORWARD_V2_ROUTING_DIGEST_OFF + i] == (uint8_t)(0xa0 + i));
+    }
+    // ...and the inner payload starts AFTER it, not on top of it.
+    CHECK(memcmp(buf + CM_FORWARD_V2_HEADER_BYTES, inner, sizeof(inner) - 1) == 0);
+
+    cm_forward_v2_t out; memset(&out, 0, sizeof(out));
+    CHECK(cm_forward_v2_decode(buf, used, &out) == 0);
+    CHECK(memcmp(out.routing_digest, a.routing_digest, 32) == 0);
+    CHECK(out.inner_payload_len == sizeof(inner) - 1);
+    CHECK(memcmp(out.inner_payload, inner, sizeof(inner) - 1) == 0);
+
+    // A one-bit change to the digest survives the round trip as a difference —
+    // i.e. the field is really carried, not zeroed and reconstructed.
+    a.routing_digest[31] ^= 0x01;
+    CHECK(cm_forward_v2_encode(&a, buf, &used) == 0);
+    CHECK(cm_forward_v2_decode(buf, used, &out) == 0);
+    CHECK(memcmp(out.routing_digest, a.routing_digest, 32) == 0);
 }
 
 static void test_cell_a_encode_decode(void) {
@@ -364,6 +409,7 @@ int main(void) {
     printf("=== test_cell_forward_v2 ===\n");
 
     test_budget();
+    test_routing_digest_round_trips();
     test_cell_a_encode_decode();
     test_cell_a_max_payload();
     test_cell_a_overflow_rejected();

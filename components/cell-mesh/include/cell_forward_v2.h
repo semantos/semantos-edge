@@ -64,7 +64,12 @@ extern "C" {
 
 // ── Cell A: primary constants ─────────────────────────────────────────────────
 
-#define CM_FORWARD_V2_HEADER_BYTES     24u
+// 24 header bytes + a 32-byte digest of Cell B at offset 24.
+// Cell A is signed, Cell B is not, and Cell B carries the route AND the payment
+// commitments. This digest binds them under Cell A's signature; without it,
+// "Cell A verified" said nothing about where the cell went or what it claimed.
+#define CM_FORWARD_V2_ROUTING_DIGEST_OFF 24u
+#define CM_FORWARD_V2_HEADER_BYTES     56u
 #define CM_FORWARD_V2_MAX_INNER_BYTES  (CM_PAYLOAD_SIZE - CM_FORWARD_V2_HEADER_BYTES)  // 744
 
 // flags byte (Cell A offset 19)
@@ -93,6 +98,7 @@ typedef struct {
     uint8_t       total_hops;
     cm_hop_verb_t hop_verb;
     uint8_t       flags;             // CM_FWD_V2_FLAG_ROUTING_CONT always set
+    uint8_t       routing_digest[32];// SHA-256 of the whole 1024-byte Cell B
     uint32_t      inner_payload_len; // bytes of inner_payload that are valid
     uint8_t       inner_payload[CM_FORWARD_V2_MAX_INNER_BYTES];
 } cm_forward_v2_t;

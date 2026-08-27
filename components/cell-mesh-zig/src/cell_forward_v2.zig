@@ -3,7 +3,16 @@ const wire = @import("cell_wire.zig");
 const channel = @import("cell_channel.zig");
 const forward = @import("cell_forward.zig");
 
-pub const header_bytes: usize = 24;
+/// 24 header bytes + a 32-byte digest of Cell B.
+///
+/// Cell A is signed and Cell B is not, and Cell B is where the ROUTE and the
+/// PAYMENT COMMITMENTS live. Without this field, "Cell A's signature verified"
+/// said nothing about the route the cell travelled or the shares claimed along
+/// it — both rode in a cell anyone could mint. The digest pulls Cell B under
+/// Cell A's signature transitively: change one byte of the route and Cell A no
+/// longer vouches for it.
+pub const header_bytes: usize = 56;
+pub const routing_digest_offset: usize = 24;
 pub const max_inner_bytes: usize = wire.payload_size - header_bytes;
 pub const routing_cont_flag: u8 = 0x01;
 pub const commit_slot_bytes: usize = 68;
@@ -15,6 +24,9 @@ pub const ForwardV2 = extern struct {
     total_hops: u8,
     hop_verb: c_int,
     flags: u8,
+    /// SHA-256 over the whole 1024-byte Cell B. Zero means "not bound", which
+    /// a verifying device must refuse — see header_bytes.
+    routing_digest: [32]u8,
     inner_payload_len: u32,
     inner_payload: [max_inner_bytes]u8,
 };
@@ -45,10 +57,11 @@ pub export fn cm_forward_v2_encode(
     out[18] = @intCast(in.hop_verb & 0xff);
     out[19] = in.flags | routing_cont_flag;
     wire.writeU32(out[20..][0..4], in.inner_payload_len);
+    @memcpy(out[routing_digest_offset..][0..32], in.routing_digest[0..]);
 
     if (in.inner_payload_len > 0) {
         const n: usize = @intCast(in.inner_payload_len);
-        @memcpy(out[24..][0..n], in.inner_payload[0..n]);
+        @memcpy(out[header_bytes..][0..n], in.inner_payload[0..n]);
     }
 
     out_used.* = header_bytes + @as(usize, @intCast(in.inner_payload_len));
@@ -71,13 +84,14 @@ pub export fn cm_forward_v2_decode(
     out.hop_verb = in[18];
     out.flags = in[19];
     out.inner_payload_len = wire.readU32(in[20..][0..4]);
+    @memcpy(out.routing_digest[0..], in[routing_digest_offset..][0..32]);
 
     if (out.inner_payload_len > max_inner_bytes) return -1;
     if (header_bytes + @as(usize, @intCast(out.inner_payload_len)) > in_used) return -1;
 
     if (out.inner_payload_len > 0) {
         const n: usize = @intCast(out.inner_payload_len);
-        @memcpy(out.inner_payload[0..n], in[24..][0..n]);
+        @memcpy(out.inner_payload[0..n], in[header_bytes..][0..n]);
     }
     return 0;
 }

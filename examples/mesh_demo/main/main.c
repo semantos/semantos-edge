@@ -955,6 +955,34 @@ static void on_radio_recv(const uint8_t sender_mac[6],
         if (my_hop > 0 && memcmp(sender_mac, fwd.segments[my_hop - 1], 6) != 0) {
             return;
         }
+
+        // ── Authenticate. ────────────────────────────────────────────────
+        //
+        // This cell was ALWAYS signed on the wire — the bridge signs every
+        // forward.v0 with the operator key — but this handler sits above the
+        // wallet gate and never looked. INSTALL_RULE writes to the rule table,
+        // so without this anyone in ESP-NOW range who put our MAC in segments[]
+        // could install a rule on this device.
+        //
+        // It could not be checked before: the old relay rebuilt the cell and
+        // zeroed the signature, so hop 1 would have refused a legitimate cell.
+        // Relaying verbatim is what makes the origin's signature still be here
+        // to check.
+        //
+        // Placed AFTER self-location on purpose. cm_sig_verify is ~267 ms; a
+        // device should not spend that on every forward it merely overhears,
+        // only on the ones addressed to it. That costs an attacker nothing, but
+        // it is the difference between a rule write and a wasted broadcast.
+        {
+            uint8_t fwd_hash[32];
+            cm_sig_hash_cell(cell, fwd_hash);
+            if (cm_sig_verify(s_wallet_pubkey, fwd_hash, sig) != 0) {
+                ESP_LOGW(TAG, "RX [%s] forward: sig INVALID (wallet pubkey) — DROP",
+                         mac_str);
+                return;
+            }
+        }
+
         uint8_t next_mac[6] = {0};
         cm_forward_step_rc_t rc;
         if (my_hop + 1 < path_len) {
@@ -1333,6 +1361,29 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             return;
         }
         s_fwdv2_burst.valid = false;  // consume the slot now that we own this hop
+
+        // ── Bind Cell B to Cell A. ───────────────────────────────────────
+        //
+        // Cell A is signed; Cell B is not. The route (segments[]) and the
+        // payment commitments (hop_commitments[]) both live in Cell B, so
+        // verifying Cell A alone proved only that the PAYLOAD was the
+        // origin's — anyone could have supplied the route it travelled and
+        // the shares claimed along it.
+        //
+        // Cell A now carries SHA-256 of the whole Cell B, so the route is
+        // under the origin's signature transitively. Checked BEFORE the
+        // signature verify below only because it is 100x cheaper; the
+        // signature is what makes the digest mean anything, and a forged pair
+        // fails there regardless.
+        {
+            uint8_t b_hash[32];
+            cm_sig_hash_cell(cell, b_hash);
+            if (memcmp(b_hash, s_fwdv2_burst.primary.routing_digest, 32) != 0) {
+                ESP_LOGW(TAG, "RX [%s] forward.v2: Cell B does not match Cell A's "
+                         "routing_digest — DROP", mac_str);
+                return;
+            }
+        }
 
         // ── Capability check using Cell A's signing key ────────────────────
         {
