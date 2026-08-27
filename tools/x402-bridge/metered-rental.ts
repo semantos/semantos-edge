@@ -20,6 +20,7 @@
  */
 
 import readline from 'node:readline';
+import { startSigner } from './signer.js';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { openSync, writeSync, closeSync, readdirSync } from 'node:fs';
 import { PrivateKey } from '@bsv/sdk';
@@ -40,7 +41,11 @@ const watchPort  = flag('--watch') ?? ports[1] ?? ports[0] ?? '/dev/cu.usbmodem1
 const baud       = flag('--baud', '115200')!;
 const settleOnClose = process.argv.includes('--settle') || process.argv.includes('--real-payment');
 
-const WALLET = new PrivateKey('0000000000000000000000000000000000000000000000000000000000000042', 16);
+// Cell authority. The device verifies every signed cell against the trust
+// anchor in its firmware, so this must BE that anchor — it is the fleet
+// operator root by default. Nothing here spends on-chain, so there is no
+// second key to keep apart.
+const WALLET = startSigner().key;
 const OWNER  = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex')).subarray(0, 16);
 const WALLET_PUBKEY = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex'));
 const OPEN_TYPE       = typeHash('cellmesh.channel_open.v0');

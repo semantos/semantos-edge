@@ -22,6 +22,7 @@
  */
 
 import { PrivateKey, ECDSA, BigNumber } from '@bsv/sdk';
+import { startSigner } from './x402-bridge/signer.js';
 import { DOMAIN } from './domains.js';
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -80,7 +81,13 @@ const KIND_ACTUATOR_ACTIVATE  = 10;
 // ── Demo wallet keypair ──────────────────────────────────────────────
 // Committed deliberately. This IS the wallet's identity — it's not
 // supposed to be on the device. Rotate when moving past demo mode.
-const WALLET_PRIVKEY_HEX = '0000000000000000000000000000000000000000000000000000000000000042';
+// The deck's cells are broadcast by devices and verified by their PEERS against
+// the trust anchor compiled into firmware. Signing with a key that is not that
+// anchor produces 185 cells that every board silently refuses — which is what
+// the checked-in deck was, once USE_FLEET_ANCHOR flipped to 1.
+//
+// So the deck signs with whatever signer.ts resolves: the fleet operator root by
+// default, or MESH_SIGNER=legacy for firmware still built with the old anchor.
 
 // ── Devices: hardcoded MACs (matching the forward-visual demo) ────────
 const DEVICE_MACS: ReadonlyArray<{ name: string; mac: number[] }> = [
@@ -152,13 +159,20 @@ const ACTUATOR_OFFER_TYPE     = typeHash('cellmesh.actuator_offer.v0');
 const ACTUATOR_ACTIVATE_TYPE  = typeHash('cellmesh.actuator_activate.v0');
 
 // ── Wallet key ───────────────────────────────────────────────────────
-const WALLET_KEY = new PrivateKey(WALLET_PRIVKEY_HEX, 16);
+const WALLET_KEY = startSigner().key;
 const WALLET_PUBKEY_COMP_HEX = WALLET_KEY.toPublicKey().toString();  // 66-char compressed hex
 const WALLET_PUBKEY = new Uint8Array(Buffer.from(WALLET_PUBKEY_COMP_HEX, 'hex'));
 // Use first 16 bytes of compressed pubkey as wallet's owner-id tag.
 const WALLET_OWNER_ID = WALLET_PUBKEY.subarray(0, 16);
 
-const PROVISIONING_TIMESTAMP_MS = BigInt(Date.now());
+// Pinned, not Date.now(). Every cell in a deck shares this stamp, and it is
+// covered by each cell's signature — so a clock-derived value made the artifact
+// unreproducible: regenerating produced 202 KB of diff that proved nothing and
+// hid whether anything real had changed. Override with DECK_TIMESTAMP_MS when a
+// deck genuinely needs a new provisioning epoch.
+const PROVISIONING_TIMESTAMP_MS = BigInt(
+  process.env.DECK_TIMESTAMP_MS ?? '1779435345626',
+);
 
 // ── Cell builder ─────────────────────────────────────────────────────
 //

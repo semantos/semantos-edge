@@ -18,6 +18,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { startSigner } from './signer.js';
 import { openSync, writeSync, closeSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,7 +44,23 @@ const tailPorts = (flag('--tail', '/dev/cu.usbmodem21301,/dev/cu.usbmodem21401')
 const baud = flag('--baud', '115200')!;
 const WEB = join(dirname(fileURLToPath(import.meta.url)), 'web', 'control.html');
 
-const WALLET = new PrivateKey('0000000000000000000000000000000000000000000000000000000000000042', 16);
+// ── Two keys, two jobs. Do not merge them. ──────────────────────────────────
+//
+// WALLET signs CELLS. A device checks every signed cell against the trust
+// anchor compiled into its firmware, so this must equal that anchor — the
+// fleet operator root by default. See signer.ts.
+const WALLET = startSigner().key;
+
+// CHAIN_WALLET funds and settles ON-CHAIN. openChannel() locks real sats to
+// its pubkey and settleChannel() spends them, so it must stay wherever the
+// money already is — moving it with the signing key would strand any balance
+// at the old address. It is deliberately the original demo key, and it is only
+// reachable behind --real-payment.
+const CHAIN_WALLET = new PrivateKey(
+  process.env.MESH_CHAIN_KEY_HEX?.trim()
+    ?? '0000000000000000000000000000000000000000000000000000000000000042',
+  16,
+);
 const WALLET_PUB = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex'));
 const OWNER = WALLET_PUB.subarray(0, 16);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -670,7 +687,7 @@ const server = Bun.serve({
           if (crossed) {
             broadcast(`[ctl] CHANNEL THRESHOLD REACHED — settling on chain …`);
             try {
-              const settleTxid = await settleChannel(activeChannel, WALLET);
+              const settleTxid = await settleChannel(activeChannel, CHAIN_WALLET);
               broadcast(`[ctl] CHANNEL SETTLED → txid ${settleTxid} (WoC: https://whatsonchain.com/tx/${settleTxid})`);
               // Emit cellmesh.channel_settle.v0 into the mesh so devices log it.
               // Retry 3× with 600ms gap to survive ESP-NOW packet loss.
@@ -814,7 +831,7 @@ const server = Bun.serve({
           if (crossed) {
             broadcast(`[ctl] CHANNEL THRESHOLD REACHED (v2 burst) — settling on chain …`);
             try {
-              const settleTxid = await settleChannel(activeChannel, WALLET);
+              const settleTxid = await settleChannel(activeChannel, CHAIN_WALLET);
               broadcast(`[ctl] CHANNEL SETTLED → txid ${settleTxid} (WoC: https://whatsonchain.com/tx/${settleTxid})`);
               const sp = buildSettlePayload(activeChannel, settleTxid);
               for (let ri = 0; ri < 3; ri++) {
@@ -853,7 +870,7 @@ const server = Bun.serve({
       }
       try {
         broadcast(`[ctl] opening BSV channel: funding ${CHANNEL_FUNDING_SATS} sats via Metanet Desktop…`);
-        activeChannel = await openChannel(WALLET, { metanetBase: metanetBase, origin: metanetOrigin });
+        activeChannel = await openChannel(CHAIN_WALLET, { metanetBase: metanetBase, origin: metanetOrigin });
         // Reset in-memory forward.v1/v2 counters + capability cert flag so the new
         // channel gets a fresh cert with its derived relay key.
         fwdV1Ch.B.seq = 0; fwdV1Ch.B.share = 0;

@@ -2,21 +2,25 @@
 /**
  * Does a cert built by the BRIDGE install on a fleet-anchored board?
  *
- * The bridge's own cell shape and domain, signed by the fleet operator root so
- * the board's trust anchor is satisfied. That isolates the question to the one
- * thing this change is about: the domain flag.
+ * Everything here is the bridge's own code and the bridge's own resolved
+ * signer — no test-only key handling, so a pass means the shipped path works.
+ * Three cases, isolating one variable each:
  *
- * The bridge's demo key (…0042) is NOT this key. A fleet-anchored board rejects
- * that signature outright — which is a separate, pre-existing incompatibility
- * and not what we are testing here.
+ *   1. the bridge as shipped              -> must INSTALL
+ *   2. the same cert on another domain    -> must be REFUSED for its domain
+ *   3. the same cert signed by the legacy key -> must be REFUSED for its signature
  *
- *   PLEXUS_SDK=/path/to/plexus-sdk-ts/dist/index.js \
- *     bun tools/x402-bridge/bridge-cert-hardware-check.ts [--port /dev/cu.usbmodemXXXX]
+ * Case 3 matters because it distinguishes the two gates. Before the signer was
+ * repointed, EVERY bridge cell failed on the signature and the domain was never
+ * reached; case 1 passing while case 3 fails is the proof that changed.
+ *
+ *   bun tools/x402-bridge/bridge-cert-hardware-check.ts [--port /dev/cu.usbmodemXXXX]
  */
 
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
-import { buildCapabilityCertPayload, certHash, CAP_ROUTE_FWD_V1, CAPABILITY_V0_TYPE } from './capability-cert.js';
+import { buildCapabilityCertPayload, certHash, deriveChannelRelayKey, CAP_ROUTE_FWD_V1, CAPABILITY_V0_TYPE } from './capability-cert.js';
+import { startSigner, checkAgainstFirmware, resolveSigner } from './signer.js';
 import { mintCell } from './cell-codec.js';
 import { domainForType } from './cell-domains.js';
 import { DOMAIN, domainName } from '../domains.js';
@@ -27,12 +31,6 @@ const arg = (n: string, d: string) => {
 };
 const INJECT = arg('--port', '/dev/cu.usbmodem21201');
 const WATCH = arg('--watch', '/dev/cu.usbmodem21301');
-// The demo fleet the boards are flashed for (salt is in the repo — DEMO only).
-const ROOT_EMAIL = 'operator@fleet.example';
-const ROOT_SALT = 'demo-fleet-salt';
-
-const SDK = process.env.PLEXUS_SDK ?? '/Users/toddprice/projects/repos/libs/plexus-sdk-ts/dist/index.js';
-const sdk = await import(SDK);
 
 const crc32 = (b: Uint8Array): number => {
   let c = ~0;
@@ -45,12 +43,17 @@ const crc32 = (b: Uint8Array): number => {
 const hex = (b: Uint8Array) => Buffer.from(b).toString('hex');
 
 // ── build the cert exactly as the bridge does ───────────────────────────────
-const operator = sdk.derivePrivateKeyAtPath(ROOT_EMAIL, ROOT_SALT, 'root');
-const operatorPk = new Uint8Array(Buffer.from(operator.toPublicKey().toString(), 'hex'));
+// The SHIPPED resolution path, not a test fixture: whatever a bridge tool would
+// sign with is what gets injected here.
+const signer = startSigner();
+const check = checkAgainstFirmware(signer);
+console.log(`\n${check.message}\n`);
+const operator = signer.key;
+const operatorPk = new Uint8Array(Buffer.from(signer.publicKeyHex, 'hex'));
 
 // A relay key for a demo channel — public half only reaches the device.
-const relay = sdk.derivePrivateKeyAtPath(ROOT_EMAIL, ROOT_SALT, 'root');
-const relayPk = new Uint8Array(Buffer.from(relay.toPublicKey().toString(), 'hex'));
+const relay = deriveChannelRelayKey(operator, 'a5'.repeat(16));
+const relayPk = relay.pk;
 const channelId = new Uint8Array(16).fill(0xa5);
 const validFrom = BigInt(Date.now());
 
@@ -69,6 +72,7 @@ const build = (domainFlag: number) => {
 };
 
 console.log('bridge-built capability cert');
+console.log(`  signer           ${signer.source}`);
 console.log(`  operator anchor  ${hex(operatorPk)}`);
 console.log(`  domain           0x${flag.toString(16).padStart(8, '0')}  (${domainName(flag)})`);
 console.log(`  cert hash        ${hex(certHash(payload))}`);
@@ -159,8 +163,25 @@ if (gotBad.includes('CAP cert REFUSED')) {
   console.log('  REFUSED — valid operator signature, byte-identical payload, wrong rail');
 } else { console.log('  NOT REFUSED — the domain is not being enforced'); failures++; }
 
+// The legacy key: correct payload, correct domain, wrong SIGNER. This is what
+// every bridge cell looked like before the signer was repointed, and it must
+// now fail on the signature — a different gate from case 2.
+const legacy = resolveSigner({ MESH_SIGNER: 'legacy' } as NodeJS.ProcessEnv);
+const legacyCell = mintCell(CAPABILITY_V0_TYPE, payload, operatorPk.subarray(0, 16), validFrom, flag);
+const legacySigObj = legacy.key.sign(Array.from(legacyCell));
+const legacySig = new Uint8Array([
+  ...legacySigObj.r.toArray('be', 32), ...legacySigObj.s.toArray('be', 32),
+]);
+const gotLegacy = await inject(
+  '3. the same cert signed by the LEGACY key — must be refused on its SIGNATURE',
+  legacyCell, legacySig);
+if (gotLegacy.includes('signature INVALID')) {
+  console.log('  REFUSED — right domain, wrong signer: a different gate from case 2');
+} else { console.log('  NOT REFUSED as expected'); failures++; }
+
 console.log(failures === 0
-  ? '\nA cert built by the x402 bridge, carrying the rail the bridge declares,\n' +
-    'installs on a fleet-anchored C6 — and the same cert on another rail does not.'
+  ? '\nThe x402 bridge, as shipped, signs with the fleet operator root and its\n' +
+    'certs install on a fleet-anchored C6. The same cert is refused for the\n' +
+    'wrong domain, and refused again for the wrong signer — two gates, both live.'
   : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

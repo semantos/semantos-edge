@@ -24,6 +24,7 @@
  */
 
 import readline from 'node:readline';
+import { startSigner } from './signer.js';
 import { DOMAIN } from '../domains.js';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { openSync, writeSync, closeSync, readdirSync } from 'node:fs';
@@ -50,7 +51,11 @@ const realPayment = process.argv.includes('--real-payment');
 
 // Operator wallet: the key every board is provisioned to trust. The operator
 // signs the activation (frame auth) + the P2PK authorization script.
-const WALLET = new PrivateKey('0000000000000000000000000000000000000000000000000000000000000042', 16);
+// Cell authority. The device verifies every signed cell against the trust
+// anchor in its firmware, so this must BE that anchor — it is the fleet
+// operator root by default. Nothing here spends on-chain, so there is no
+// second key to keep apart.
+const WALLET = startSigner().key;
 const OWNER  = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex')).subarray(0, 16);
 const WALLET_PUBKEY = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex'));
 const ACTUATOR_ACTIVATE_TYPE = typeHash('cellmesh.actuator_activate.v0');
