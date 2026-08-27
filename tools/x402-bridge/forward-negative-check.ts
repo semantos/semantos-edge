@@ -21,7 +21,9 @@ import { spawn, execFileSync } from 'node:child_process';
 import { PrivateKey } from '@bsv/sdk';
 import { mintCell, signCell, typeHash, writeU32LE, sha256 } from './cell-codec.js';
 import { domainForType } from './cell-domains.js';
+import { buildCapabilityCertCell, deriveChannelRelayKey } from './capability-cert.js';
 import { startSigner, resolveSigner } from './signer.js';
+import { DOMAIN } from '../domains.js';
 
 const INJECT = '/dev/cu.usbmodem21201';
 const WATCH = '/dev/cu.usbmodem21301';          // MAC_B — segments[0]
@@ -189,7 +191,59 @@ p.setDTR(False); p.setRTS(True); time.sleep(0.1); p.setRTS(False); p.close()`]);
   } else { console.log('  no verdict (nothing logged)'); failures++; }
 }
 
+// ── 4. Cell B's HEADER must not steer any decision ─────────────────────────
+{
+  // The flow_id binding covers Cell B's PAYLOAD (bytes 16..320), not its
+  // header. So Cell B's header is attacker-controlled for good — it carries no
+  // signature and never will. The device must therefore make no decision from
+  // it. It used to: the capability lookup took its domain from Cell B, so an
+  // attacker could re-mint Cell B with an identical payload and a chosen
+  // domain, pass the binding, and pick which grant authorised the relay.
+  //
+  // Here Cell A is on the relay rail and Cell B's header says org.member. If
+  // the device still read the domain from Cell B it would find no cert and drop
+  // with "no cert for channel". Accepting it is the proof that the domain now
+  // comes from the signed cell.
+  // Case 3 reset the board, so its capability table is empty. Install a cert
+  // first, or this fails with "no cert" for a reason that has nothing to do
+  // with what is being tested.
+  const relay = deriveChannelRelayKey(signer.key, '00'.repeat(16));
+  {
+    const { cell: certCell, sig: certSig } = buildCapabilityCertCell(
+      new Uint8Array(16), relay, signer.key, 0xffffffffffffffffn, BigInt(Date.now()),
+    );
+    await send(certCell, certSig);
+    await new Promise((r) => setTimeout(r, 3000));   // one cell per second, roughly
+  }
+
+  const payloadB = buildCellB(new Uint8Array(16));
+  payloadB.set(routingFlowId(payloadB), 0);
+  const cellB = mintCell(T_ROUTING, payloadB, OWNER, BigInt(Date.now()), DOMAIN.orgMember);
+  const payloadA = buildCellA(payloadB.subarray(0, 16));
+  const cellA = mintCell(T_FWD_V2, payloadA, OWNER, BigInt(Date.now()), domainForType(T_FWD_V2));
+  // Cell A is signed by the RELAY key the cert grants, not by the operator
+  // root — that is what the device verifies against, via the cert's edge_pubkey.
+  const relayWallet = new PrivateKey(Buffer.from(relay.sk).toString('hex'), 16);
+  const x = relayWallet.sign(Array.from(cellA));
+  const sigA = new Uint8Array([...x.r.toArray('be', 32), ...x.s.toArray('be', 32)]);
+
+  const out = await watch(
+    "4. Cell B's header domain switched to org.member — the decision must ignore it",
+    async () => {
+      await send(cellA, sigA);
+      await new Promise((r) => setTimeout(r, 2500));
+      await send(cellB, new Uint8Array(64));
+    }, 7000);
+  if (/forward\.v2: CAP-verified/.test(out)) {
+    console.log("  IGNORED — the capability domain came from the SIGNED Cell A");
+  } else if (out.includes('no cert for channel')) {
+    console.log("  STEERED BY IT — Cell B's unsigned header is still choosing the grant"); failures++;
+  } else if (out.includes('sig INVALID')) {
+    console.log('  inconclusive — Cell A was signed by the wrong key, not a domain result'); failures++;
+  } else { console.log('  no verdict (nothing logged)'); failures++; }
+}
+
 console.log(failures === 0
-  ? '\nAll three gates refuse what they are meant to refuse.'
+  ? '\nAll four checks behave as intended.'
   : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

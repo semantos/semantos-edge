@@ -1118,11 +1118,23 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             const uint8_t *chid = (my_hop < CM_FORWARD_MAX_HOPS)
                                    ? fv1.hop_commitments[my_hop].channel_id
                                    : NULL;
-            // OP_CHECKDOMAINFLAG, in the fast path: the cell's declared domain
+            // OP_CHECKDOMAINFLAG, in the fast path: the declared domain
             // (header bytes 24-27) is part of the lookup key, so authority
-            // issued for one domain cannot relay a cell from another. A
-            // mismatch is a miss, and the no-cert DROP below handles it.
-            const uint32_t cell_domain = cm_flags(cell);
+            // issued for one domain cannot relay a cell from another.
+            //
+            // Read from CELL A, not from `cell` — `cell` here is Cell B, which
+            // carries no signature and whose header the flow_id binding does
+            // NOT cover (the binding hashes payload[16..320]). Taking the
+            // domain from Cell B let an attacker re-mint it with an identical
+            // payload and a chosen flags word, passing the binding while
+            // changing which grant authorises the relay — on a device holding
+            // grants in more than one domain, choosing it.
+            //
+            // Cell A's header is inside the 1024 bytes verified below, so a
+            // forged one cannot survive; using it before that check is safe
+            // because the check is what makes the lookup's answer mean
+            // anything.
+            const uint32_t cell_domain = cm_flags(s_fwdv2_burst.primary_cell);
             const uint8_t *edge_pk = chid
                 ? cm_cap_lookup(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_cap, cell_domain)
                 : NULL;
@@ -1385,11 +1397,23 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                                    ? pb.hop_commitments[my_hop].channel_id
                                    : NULL;
             uint64_t now_cap = (uint64_t)esp_log_timestamp();
-            // OP_CHECKDOMAINFLAG, in the fast path: the cell's declared domain
+            // OP_CHECKDOMAINFLAG, in the fast path: the declared domain
             // (header bytes 24-27) is part of the lookup key, so authority
-            // issued for one domain cannot relay a cell from another. A
-            // mismatch is a miss, and the no-cert DROP below handles it.
-            const uint32_t cell_domain = cm_flags(cell);
+            // issued for one domain cannot relay a cell from another.
+            //
+            // Read from CELL A, not from `cell` — `cell` here is Cell B, which
+            // carries no signature and whose header the flow_id binding does
+            // NOT cover (the binding hashes payload[16..320]). Taking the
+            // domain from Cell B let an attacker re-mint it with an identical
+            // payload and a chosen flags word, passing the binding while
+            // changing which grant authorises the relay — on a device holding
+            // grants in more than one domain, choosing it.
+            //
+            // Cell A's header is inside the 1024 bytes verified below, so a
+            // forged one cannot survive; using it before that check is safe
+            // because the check is what makes the lookup's answer mean
+            // anything.
+            const uint32_t cell_domain = cm_flags(s_fwdv2_burst.primary_cell);
             const uint8_t *edge_pk = chid
                 ? cm_cap_lookup(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_cap, cell_domain)
                 : NULL;
@@ -1423,7 +1447,8 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             uint64_t now_ms = (uint64_t)esp_log_timestamp();
             const uint8_t *chid = pb.hop_commitments[my_hop].channel_id;
             const uint8_t *stored_hash =
-                cm_cap_cert_hash(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_ms, cm_flags(cell));
+                cm_cap_cert_hash(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_ms,
+                                 cm_flags(s_fwdv2_burst.primary_cell));
             if (stored_hash &&
                 memcmp(stored_hash, pb.hop_commitments[my_hop].cert_hash, 32) != 0) {
                 ESP_LOGW(TAG, "RX [%s] forward.v2: cert_hash mismatch hop=%u — DROP",
