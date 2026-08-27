@@ -384,6 +384,21 @@ static          uint32_t s_tx_emit_counter    = 0;
 // Single producer (receive callback), single consumer (main loop).
 static volatile bool      s_pending_forward       = false;
 static          cm_forward_t s_pending_forward_f;
+
+// The domain flag of the cell currently queued for relay.
+//
+// A relay is the SAME authority being exercised one hop further on, so the
+// relayed cell must carry the domain the original signer declared. Minting it
+// with cm_cell_init alone leaves header bytes 24-27 at zero, and the next hop's
+// cm_cap_lookup — which keys on the domain — then misses and drops the cell
+// with "no cert for channel", naming the capability table for what is actually
+// a lost header field. Observed on real silicon at hop 1.
+//
+// It must NOT be this device's own domain: stamping our own would let a device
+// in one domain launder a cell out of another.
+static uint32_t s_pending_forward_domain    = 0;
+static uint32_t s_pending_forward_v1_domain = 0;
+static uint32_t s_pending_fwdv2_domain      = 0;
 static volatile uint32_t  s_forward_overruns      = 0;
 static          uint32_t  s_tx_forward_counter    = 0;
 static          uint32_t  s_rx_forward_counter    = 0;
@@ -981,7 +996,8 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                      next_mac[3], next_mac[4], next_mac[5],
                      (unsigned)fwd.segments_remaining, (unsigned)fwd.hop_verb);
             if (!s_pending_forward) {
-                s_pending_forward_f = fwd;
+                s_pending_forward_f      = fwd;
+                s_pending_forward_domain = cm_flags(cell);
                 s_pending_forward   = true;
             } else {
                 s_forward_overruns++;
@@ -1150,7 +1166,8 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                      (unsigned)fv1.segments_remaining, (unsigned)fv1.hop_verb,
                      (unsigned)s_fwd_channel.device_share);
             if (!s_pending_forward_v1) {
-                s_pending_forward_v1_f = fv1;
+                s_pending_forward_v1_f      = fv1;
+                s_pending_forward_v1_domain = cm_flags(cell);
                 s_pending_forward_v1   = true;
             } else {
                 s_forward_v1_overruns++;
@@ -1356,6 +1373,7 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             if (!s_pending_forward_v2) {
                 s_pending_fwdv2_a           = pa;
                 s_pending_fwdv2_b           = pb;
+                s_pending_fwdv2_domain      = cm_flags(cell);
                 s_pending_fwdv2_cell_a_sent = false;  // Cell A' not yet sent
                 s_pending_fwdv2_retry_skip  = 0;
                 s_fwdv2_cell_b_sends_left   = 3;      // redundant Cell B sends
@@ -1826,10 +1844,11 @@ static void broadcast_tap(void) {
 // populated by the caller. The cell is NOT signed (see v0 shortcut
 // note above); the type_hash + payload_root still anchor the wire
 // shape so a future signed variant slots in without changing layout.
-static int build_forward_cell(const cm_forward_t *fwd,
+static int build_forward_cell(uint32_t domain_flag, const cm_forward_t *fwd,
                               uint8_t out_cell[CM_CELL_SIZE],
                               uint8_t out_sig[CM_FRAME_SIG_SIZE]) {
     cm_cell_init(out_cell);
+    cm_set_flags(out_cell, domain_flag);   // carry the relayed cell's domain
     cm_set_linearity(out_cell, CM_LINEARITY_AFFINE);
     memcpy(cm_type_hash_mut(out_cell), s_forward_type_hash, 32);
     memcpy(cm_owner_id_mut(out_cell), s_my_mac, 6);
@@ -1880,7 +1899,7 @@ static void broadcast_forward_route(void) {
     fwd.inner_payload_len = sizeof(inner) - 1;
 
     uint8_t cell[CM_CELL_SIZE], sig[CM_FRAME_SIG_SIZE];
-    if (build_forward_cell(&fwd, cell, sig) != 0) {
+    if (build_forward_cell(s_pending_forward_domain, &fwd, cell, sig) != 0) {
         ESP_LOGE(TAG, "forward: build_forward_cell failed");
         return;
     }
@@ -1928,6 +1947,7 @@ static void broadcast_telem(uint64_t now_us) {
 
     uint8_t cell[CM_CELL_SIZE], sig[CM_FRAME_SIG_SIZE];
     cm_cell_init(cell);
+    cm_set_flags(cell, CM_DOMAIN_MESH_TELEMETRY);  // unsigned: a namespace label, not a claim
     cm_set_linearity(cell, CM_LINEARITY_AFFINE);
     memcpy(cm_type_hash_mut(cell), s_telem_type_hash, 32);
     memcpy(cm_owner_id_mut(cell), s_my_mac, 6);
@@ -1980,6 +2000,7 @@ static void emit_mnca_settle(const cm_mnca_tile_t *t, const uint8_t tile_hash[32
     static uint8_t cell[CM_CELL_SIZE], sig[CM_FRAME_SIG_SIZE];
     static uint8_t payload[CM_PAYLOAD_SIZE];
     cm_cell_init(cell);
+    cm_set_flags(cell, CM_DOMAIN_MESH_TELEMETRY);  // unsigned observation of a settlement
     cm_set_linearity(cell, CM_LINEARITY_AFFINE);
     memcpy(cm_type_hash_mut(cell), s_mnca_channel_settle_type_hash, 32);
     memcpy(cm_owner_id_mut(cell), s_my_mac, 6);
@@ -2025,6 +2046,7 @@ static void broadcast_mnca_tile(void) {
     // a 1088-byte stack alloc in the tight broadcast path.
     static uint8_t cell[CM_CELL_SIZE], sig[CM_FRAME_SIG_SIZE];
     cm_cell_init(cell);
+    cm_set_flags(cell, CM_DOMAIN_MESH_TELEMETRY);  // unsigned device observation
     cm_set_linearity(cell, CM_LINEARITY_AFFINE);
     memcpy(cm_type_hash_mut(cell), s_mnca_tile_v0_type_hash, 32);
     memcpy(cm_owner_id_mut(cell), s_my_mac, 6);
@@ -2243,7 +2265,7 @@ static void drain_pending_forward(void) {
     s_pending_forward = false;
 
     uint8_t cell[CM_CELL_SIZE], sig[CM_FRAME_SIG_SIZE];
-    if (build_forward_cell(&fwd, cell, sig) != 0) {
+    if (build_forward_cell(s_pending_forward_domain, &fwd, cell, sig) != 0) {
         ESP_LOGW(TAG, "forward relay: build_forward_cell failed");
         return;
     }
@@ -2258,8 +2280,10 @@ static void drain_pending_forward(void) {
 // ── forward.v1 relay builder + drain ────────────────────────────────
 static int build_forward_v1_cell(const cm_forward_v1_t *fv1,
                                   uint8_t out_cell[CM_CELL_SIZE],
-                                  uint8_t out_sig[CM_FRAME_SIG_SIZE]) {
+                                  uint8_t out_sig[CM_FRAME_SIG_SIZE],
+                                  uint32_t domain_flag) {
     cm_cell_init(out_cell);
+    cm_set_flags(out_cell, domain_flag);   // carry the relayed cell's domain
     cm_set_linearity(out_cell, CM_LINEARITY_AFFINE);
     memcpy(cm_type_hash_mut(out_cell), s_forward_v1_type_hash, 32);
     memcpy(cm_owner_id_mut(out_cell), s_my_mac, 6);
@@ -2288,7 +2312,7 @@ static void drain_pending_forward_v1(void) {
     s_pending_forward_v1 = false;
 
     uint8_t cell[CM_CELL_SIZE], sig[CM_FRAME_SIG_SIZE];
-    if (build_forward_v1_cell(&fv1, cell, sig) != 0) {
+    if (build_forward_v1_cell(&fv1, cell, sig, s_pending_forward_v1_domain) != 0) {
         ESP_LOGW(TAG, "forward.v1 relay: build failed");
         return;
     }
@@ -2307,10 +2331,11 @@ static void drain_pending_forward_v1(void) {
 // from the decoded structs queued by the WiFi-task receive handler, then
 // broadcasts both cells back-to-back.  Called on the main pthread only so
 // cm_radio_send_cell serialisation matches the rest of the drainers.
-static int build_forward_v2_cell_a(const cm_forward_v2_t *pa,
+static int build_forward_v2_cell_a(uint32_t domain_flag, const cm_forward_v2_t *pa,
                                     uint8_t out_cell[CM_CELL_SIZE],
                                     uint8_t out_sig[CM_FRAME_SIG_SIZE]) {
     cm_cell_init(out_cell);
+    cm_set_flags(out_cell, domain_flag);   // carry the relayed cell's domain
     cm_set_linearity(out_cell, CM_LINEARITY_AFFINE);
     memcpy(cm_type_hash_mut(out_cell), s_forward_v2_type_hash, 32);
 
@@ -2324,10 +2349,11 @@ static int build_forward_v2_cell_a(const cm_forward_v2_t *pa,
     return 0;
 }
 
-static int build_forward_v2_cell_b(const cm_routing_cont_t *pb,
+static int build_forward_v2_cell_b(uint32_t domain_flag, const cm_routing_cont_t *pb,
                                     uint8_t out_cell[CM_CELL_SIZE],
                                     uint8_t out_sig[CM_FRAME_SIG_SIZE]) {
     cm_cell_init(out_cell);
+    cm_set_flags(out_cell, domain_flag);   // carry the relayed cell's domain
     cm_set_linearity(out_cell, CM_LINEARITY_AFFINE);
     memcpy(cm_type_hash_mut(out_cell), s_routing_cont_type_hash, 32);
 
@@ -2368,7 +2394,7 @@ static void drain_pending_forward_v2(void) {
     // s_fwdv2_cell_b_sends_left times for redundancy.
     if (!s_pending_fwdv2_cell_a_sent) {
         // ── Phase 1: send Cell A' ────────────────────────────────────────────
-        if (build_forward_v2_cell_a(&pa, cell_a, sig_a) != 0) {
+        if (build_forward_v2_cell_a(s_pending_fwdv2_domain, &pa, cell_a, sig_a) != 0) {
             ESP_LOGW(TAG, "forward.v2 relay: build cell_a failed");
             return;
         }
@@ -2395,7 +2421,7 @@ static void drain_pending_forward_v2(void) {
     }
 
     // ── Phase 2: Cell A' already sent and propagated — send Cell B' ─────────
-    if (build_forward_v2_cell_b(&pb, cell_b, sig_b) != 0) {
+    if (build_forward_v2_cell_b(s_pending_fwdv2_domain, &pb, cell_b, sig_b) != 0) {
         ESP_LOGW(TAG, "forward.v2 relay: build cell_b failed");
         return;
     }
