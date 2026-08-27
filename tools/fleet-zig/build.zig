@@ -28,6 +28,12 @@ pub fn build(b: *std.Build) void {
     identity_mod.addImport("derive", derive_mod);
     identity_mod.addImport("certid", certid_mod);
 
+    const store_mod = b.addModule("store", .{
+        .root_source_file = b.path("src/store.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Conformance against the SDK's pinned golden vector. The vector is
     // embedded rather than read at runtime so the test cannot silently pass by
     // failing to find it.
@@ -41,11 +47,15 @@ pub fn build(b: *std.Build) void {
     conformance.root_module.addImport("derive", derive_mod);
     conformance.root_module.addImport("certid", certid_mod);
     conformance.root_module.addImport("identity", identity_mod);
+    conformance.root_module.addImport("store", store_mod);
     conformance.root_module.addAnonymousImport("golden", .{
         .root_source_file = b.path("vectors/cross-impl-derivation.golden.json"),
     });
     conformance.root_module.addAnonymousImport("golden_escaping", .{
         .root_source_file = b.path("vectors/canonical-json-escaping.golden.json"),
+    });
+    conformance.root_module.addAnonymousImport("golden_rotation", .{
+        .root_source_file = b.path("vectors/rotation.golden.json"),
     });
 
     const run_conformance = b.addRunArtifact(conformance);

@@ -3,10 +3,10 @@
 Plexus key derivation in Zig, on [bsvz](https://github.com/b-open-io/bsvz).
 
 ```bash
-zig build test --summary all     # 24 conformance tests against the SDK's oracle
+zig build test --summary all     # 33 conformance tests against the SDK's oracle
 ```
 
-**M1–M2 of the Zig control plane: derivation and certificate ids.** The port
+**M1–M3 of the Zig control plane: derivation, certificate ids, and the store.** The port
 reproduces the Plexus SDK byte-for-byte, checked against the SDK's own vectors
 rather than against expectations written here. From `(rootEmail, rootSalt)` alone
 it recomputes the root certificate id and every id in the vector's counter
@@ -37,10 +37,36 @@ private keys on device" structural rather than remembered.
 | `computeCertId(preimage)` | `sha256hex(canonicalJson(...))` |
 | `rootIdentity(email, salt)` | the root's pubkey, serialNumber and certId |
 | `deriveChildIdentity(...)` | a child's key, path, serialNumber and certId |
+| `Store.allocateIndex(...)` | consume the next free index at a context |
+| `Store.burnSlot(...)` | rotation — consume without issuing, return the new mark |
+| `Store.restoreCounter(...)` | recovery restore; refuses to rewind |
+| `Store.putNode` / `getNode` / `children` | the provisioned fleet |
 
 `plexus-kdf-v2` and `v3` are in the vector and deliberately not ported — v1 is
-what a fleet uses. Rotation, the fleet store, the 66-byte cert encoding and
-signing are M3–M4.
+what a fleet uses. The 66-byte cert encoding and signing are M4.
+
+## The store: one counter, not two
+
+The SDK has `child_counters.next_index` AND `derivation_state.current_index`.
+That is not a design, it is a repair: the two tables were written by different
+code paths and nothing reconciled them, so `rotateContext` advanced a counter
+`deriveChild` never read and rotation changed no key at all.
+
+This store has **one** counter, and `highWaterMark` is a read of it. A port
+should reproduce the SDK's behaviour, not the shape of its bug — and the
+equivalence is checked rather than asserted, because
+`vectors/gen-rotation-vector.mjs` drives the SDK's *real* `MemoryKeyStore`
+through a scripted sequence of allocations, burns and restores and records every
+return value. M3's gate was "port the SDK's rotation tests"; replaying its actual
+trace is stronger, because a ported test re-states what I believe the semantics
+are while a trace states what they are.
+
+Persistence is an **append-only log**, which buys two properties structurally
+rather than by a check: an allocation cannot be un-issued, and replay takes the
+maximum so reopening is idempotent and order-independent. **The newline is the
+commit marker** — a record whose bytes all landed but whose terminator did not is
+dropped, which is the torn write that would otherwise be invisible, since the
+fragment is perfectly valid JSON.
 
 ## Two shapes, and the ways they fork silently
 
@@ -88,6 +114,17 @@ mutation-tested — each of these was applied and the suite caught it:
 | `0x0B` → `\v` instead of `\u000b` | yes |
 | uppercase hex in `\u00XX` | yes |
 | escape `/`, or escape DEL, or `\u`-escape non-ASCII | yes |
+| burn does not consume an index | yes |
+| restore allowed to rewind | yes |
+| replay sets instead of raising | yes — *after* a test was added |
+| torn record accepted | yes — *after* a test was added |
+
+Two of those rows say "after a test was added", and they are the honest part of
+this table. Both store mutations initially survived: `raise`-vs-`set` was
+invisible because a log this store writes is always ordered, and the torn-record
+guard was only ever exercised by fragments that fail to parse. Neither gap was
+visible from reading the tests — only from breaking the code and watching them
+stay green.
 
 **The first run of that table is why the escaping vector exists.** Against the
 SDK's derivation vector alone, four of those escaping mutations passed
