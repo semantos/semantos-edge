@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { PrivateKey, ECDSA, BigNumber } from '@bsv/sdk';
 import { mintCell, signCell, typeHash, writeU16LE, writeU32LE, sha256, ecdsaDer, buildActuatorActivate, type ActuatorOffer } from './cell-codec.js';
 import { frameCell } from './serial-mesh.js';
+import { domainForType } from './cell-domains.js';
 import { getPublicKey, createSignature, createAction, rawTxHexFromCreateAction, p2pkhScriptHexFromPubkey, DEFAULT_ORIGIN, METANET_BASE } from './metanet.js';
 import { broadcastTxHex } from './arc.js';
 import { encodeScadaCell, anchorScadaCell, deriveScadaLeaf, SCADA_ACTION } from './scada-anchor.js';
@@ -37,9 +38,16 @@ import { validateMncaTransition, type ValidateRequest } from './mnca-oracle.js';
 const flag = (n: string, d?: string) => { const i = process.argv.indexOf(n); return i >= 0 ? process.argv[i + 1] : d; };
 const httpPort = Number(flag('--http-port', '4040'));
 const injectPort = flag('--inject-port', '/dev/cu.usbmodem21201')!;
-// Forward cells must be injected from a port != segments[0] device (that device
-// broadcasts via ESP-NOW and never receives its own broadcast). Default: MAC_A.
-const fwdInjectPort = flag('--forward-inject-port', '/dev/cu.usbmodem21301')!;
+// Forward cells must be injected from a port != segments[0] device: a board
+// broadcasts over ESP-NOW and never receives its own broadcast, so injecting a
+// forward cell into the very board it is addressed to means nobody processes it.
+//
+// segments[0] is MAC_B, so this must NOT be MAC_B's port. The default said
+// MAC_A in the comment and named MAC_B's port (…21301) in the code — the
+// comment was right and the value was wrong, and the result was a forward cell
+// that every board correctly ignored. Verified on hardware: with …21201 the
+// cell reaches MAC_B and relays; with …21301 it goes nowhere.
+const fwdInjectPort = flag('--forward-inject-port', '/dev/cu.usbmodem21201')!;
 const tailPorts = (flag('--tail', '/dev/cu.usbmodem21301,/dev/cu.usbmodem21401')!).split(',').filter(Boolean);
 const baud = flag('--baud', '115200')!;
 const WEB = join(dirname(fileURLToPath(import.meta.url)), 'web', 'control.html');
@@ -645,7 +653,27 @@ const server = Bun.serve({
         if (!s_capCertInjected) {
           await injectCapabilityCert(chId, chHex, fwdInjectPort);
           s_capCertInjected = true;
-          await sleep(300);  // give devices time to install before the first fwd.v1
+          // 3000 ms, not 300. Measured on two C6s against a freshly-reset board:
+          //
+          //    300 ms  -> the cert never arrives at all. The board logs only
+          //               "forward.v1: no cert for channel … — DROP", so the
+          //               symptom points at the capability table and the cause
+          //               is two cells too close together.
+          //   1500 ms  -> same failure.
+          //   3000 ms  -> cert verified + installed, then forward.v1 CAP-verified,
+          //               channel OK, relayed onward. Reproducible.
+          //
+          // Why it needs seconds: cm_sig_verify is ~267 ms on this chip
+          // (main.c's own boot bench prints 267749 us/verify), the receive path
+          // runs in the WiFi task, and injectCellSig sends each cell TWICE — so
+          // a cert costs two verifies plus an install, during which the radio
+          // callback is blocked and the next cell's ESP-NOW frames are dropped.
+          // Reassembly has a 1000 ms TTL, so a single lost frame loses the cell.
+          //
+          // This is the mesh's real ceiling, not a fudge: roughly one signed
+          // cell per second, which is the same ~270 ms/verify budget that keeps
+          // telemetry unsigned on the hot path.
+          await sleep(3000);
         }
         // Advance channel state for B (hop 0) and C (hop 1)
         fwdV1Ch.B.seq++; fwdV1Ch.B.share += FWD_V1_HOP_COST;
