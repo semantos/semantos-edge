@@ -936,6 +936,7 @@ test "store: replay raises rather than sets, so record order cannot rewind a cou
 // ── capability certificates ──────────────────────────────────────────────────
 
 const cert = @import("cert");
+const domains = @import("domains");
 const GOLDEN_CERT = @embedFile("golden_cert");
 const CAP_HEADER = @embedFile("cap_header");
 
@@ -986,6 +987,7 @@ test "cert: the 1 KB cell is byte-identical to the TypeScript plane's" {
         payload,
         anchor[0..16],
         try parseU64(str(v, "validFromMs")),
+        @intCast(v.object.get("domainFlags").?.object.get("device").?.integer),
     );
     const got_hex = try a.alloc(u8, cert.cell_size * 2);
     defer a.free(got_hex);
@@ -1063,6 +1065,7 @@ test "cert: signatures are low-S, which bsvz does not give for free" {
             "payload",
             "0123456789abcdef",
             1_767_225_600_000 + i,
+            domains.fleet_device,
         );
         const sig = try cert.signCell(operator, &cell);
         try std.testing.expect(std.mem.order(u8, sig[32..64], &half_n) != .gt);
@@ -1131,6 +1134,7 @@ test "cert: a real expiry pins the field's byte order" {
         &got,
         anchor[0..16],
         try parseU64(str(v, "validFromMs")),
+        @intCast(v.object.get("domainFlags").?.object.get("device").?.integer),
     );
     const cell_hex = try a.alloc(u8, cert.cell_size * 2);
     defer a.free(cell_hex);
@@ -1155,11 +1159,11 @@ test "hardware parity: the Zig plane derives what the TypeScript plane flashed" 
     const operator = try derive.derivePrivateKeyAtPath(email, salt, "root");
     try std.testing.expectEqualStrings(str(c, "operatorPubKeyHex"), &(try derive.pubHex(operator)));
 
-    const zone = try identity.deriveChildIdentity(a, email, salt, "root", "zone", 6, 0);
+    const zone = try identity.deriveChildIdentity(a, email, salt, "root", "zone", domains.zone, 0);
     defer zone.deinit(a);
     try std.testing.expectEqualStrings(str(c, "zoneDerivationPath"), zone.derivation_path);
 
-    const unit = try identity.deriveChildIdentity(a, email, salt, zone.derivation_path, "device", 6, 0);
+    const unit = try identity.deriveChildIdentity(a, email, salt, zone.derivation_path, "device", domains.fleet_device, 0);
     defer unit.deinit(a);
     try std.testing.expectEqualStrings(str(c, "deviceDerivationPath"), unit.derivation_path);
     try std.testing.expectEqualStrings(str(c, "devicePublicKeyHex"), &unit.public_key_hex);
@@ -1298,20 +1302,20 @@ test "recovery: a fleet round-trips through export and import" {
 
     var expected: [3][66]u8 = undefined;
     {
-        const zi = try origin.allocateIndex(&root.cert_id, "zone", 6);
-        const zone = try identity.deriveChildIdentity(a, email, salt, "root", "zone", 6, zi);
+        const zi = try origin.allocateIndex(&root.cert_id, "zone", domains.zone);
+        const zone = try identity.deriveChildIdentity(a, email, salt, "root", "zone", domains.zone, zi);
         defer zone.deinit(a);
-        try origin.putNode(.{ .cert_id = &zone.cert_id, .parent_cert_id = &root.cert_id, .resource_id = "zone", .domain_flag = 6, .child_index = zi, .label = "north" });
+        try origin.putNode(.{ .cert_id = &zone.cert_id, .parent_cert_id = &root.cert_id, .resource_id = "zone", .domain_flag = domains.zone, .child_index = zi, .label = "north" });
 
         for (0..2) |n| {
-            const di = try origin.allocateIndex(&zone.cert_id, "device", 6);
-            const unit = try identity.deriveChildIdentity(a, email, salt, zone.derivation_path, "device", 6, di);
+            const di = try origin.allocateIndex(&zone.cert_id, "device", domains.fleet_device);
+            const unit = try identity.deriveChildIdentity(a, email, salt, zone.derivation_path, "device", domains.fleet_device, di);
             defer unit.deinit(a);
-            try origin.putNode(.{ .cert_id = &unit.cert_id, .parent_cert_id = &zone.cert_id, .resource_id = "device", .domain_flag = 6, .child_index = di, .label = "unit" });
+            try origin.putNode(.{ .cert_id = &unit.cert_id, .parent_cert_id = &zone.cert_id, .resource_id = "device", .domain_flag = domains.fleet_device, .child_index = di, .label = "unit" });
             expected[n] = unit.public_key_hex;
         }
         // Retire a slot, so the recipe must carry a mark above the paths.
-        _ = try origin.burnSlot(&zone.cert_id, "device", 6);
+        _ = try origin.burnSlot(&zone.cert_id, "device", domains.fleet_device);
     }
 
     const recipe = try recovery.exportRecipe(a, &origin, &root.cert_id, email);
@@ -1330,17 +1334,17 @@ test "recovery: a fleet round-trips through export and import" {
     try std.testing.expectEqual(@as(usize, 0), res.floored); // an honest recipe floors nothing
 
     // The same units re-derive to the same keys...
-    const zone2 = try identity.deriveChildIdentity(a, email, salt, "root", "zone", 6, 0);
+    const zone2 = try identity.deriveChildIdentity(a, email, salt, "root", "zone", domains.zone, 0);
     defer zone2.deinit(a);
     for (0..2) |n| {
-        const unit = try identity.deriveChildIdentity(a, email, salt, zone2.derivation_path, "device", 6, n);
+        const unit = try identity.deriveChildIdentity(a, email, salt, zone2.derivation_path, "device", domains.fleet_device, n);
         defer unit.deinit(a);
         try std.testing.expectEqualStrings(&expected[n], &unit.public_key_hex);
     }
     // ...and the burn survived: the next unit lands past the retired index.
     try std.testing.expectEqual(
         @as(u64, 3),
-        try rebuilt.allocateIndex(&zone2.cert_id, "device", 6),
+        try rebuilt.allocateIndex(&zone2.cert_id, "device", domains.fleet_device),
     );
 }
 
@@ -1448,13 +1452,13 @@ test "scim: a repeated deactivate does not burn twice" {
     const zone = try m.putZone("grp-eng", "Engineering");
     _ = try m.putUser("okta-0001", "grp-eng", "Alice", true);
     _ = try m.putUser("okta-0001", "grp-eng", "Alice", false);
-    const mark = try s.highWaterMark(&zone.cert_id, scim.member_resource, scim.child_flag);
+    const mark = try s.highWaterMark(&zone.cert_id, scim.member_resource, scim.member_flag);
 
     const again = try m.putUser("okta-0001", "grp-eng", "Alice", false);
     try std.testing.expectEqual(scim.Outcome.already_inactive, again.outcome);
     // Burning on every replayed deactivate would walk the allocator away for
     // free, which an IdP retry loop would do enthusiastically.
-    try std.testing.expectEqual(mark, try s.highWaterMark(&zone.cert_id, scim.member_resource, scim.child_flag));
+    try std.testing.expectEqual(mark, try s.highWaterMark(&zone.cert_id, scim.member_resource, scim.member_flag));
 }
 
 test "scim: reactivation gives a NEW seat, not the old one back" {
@@ -1492,7 +1496,7 @@ test "scim: a user created already-inactive is not given a seat at all" {
     try std.testing.expectEqual(@as(usize, 0), m.activeSeats());
     try std.testing.expectEqual(
         @as(u64, 0),
-        try s.highWaterMark(&zone.cert_id, scim.member_resource, scim.child_flag),
+        try s.highWaterMark(&zone.cert_id, scim.member_resource, scim.member_flag),
     );
 }
 
@@ -1552,16 +1556,16 @@ test "scim: the mirrored fleet survives a recovery round trip" {
     _ = try recovery.importRecipe(a, &rebuilt, SCIM_EMAIL, SCIM_SALT, recipe);
 
     // Bob still derives to the same key...
-    const zone2 = try identity.deriveChildIdentity(a, SCIM_EMAIL, SCIM_SALT, "root", scim.zone_resource, scim.child_flag, 0);
+    const zone2 = try identity.deriveChildIdentity(a, SCIM_EMAIL, SCIM_SALT, "root", scim.zone_resource, scim.zone_flag, 0);
     defer zone2.deinit(a);
-    const bob2 = try identity.deriveChildIdentity(a, SCIM_EMAIL, SCIM_SALT, zone2.derivation_path, scim.member_resource, scim.child_flag, survivor.child_index);
+    const bob2 = try identity.deriveChildIdentity(a, SCIM_EMAIL, SCIM_SALT, zone2.derivation_path, scim.member_resource, scim.member_flag, survivor.child_index);
     defer bob2.deinit(a);
     try std.testing.expectEqualStrings(&survivor.public_key_hex, &bob2.public_key_hex);
 
     // ...and Alice's burned seat is still burned after the rebuild.
     try std.testing.expectEqual(
         @as(u64, 3),
-        try rebuilt.allocateIndex(&zone2.cert_id, scim.member_resource, scim.child_flag),
+        try rebuilt.allocateIndex(&zone2.cert_id, scim.member_resource, scim.member_flag),
     );
 }
 
@@ -1738,4 +1742,119 @@ test "scim wire: responses carry what Okta's conformance suite asserts" {
     // RFC 7644 requires status as a STRING; Okta's own examples show an
     // integer. A string satisfies both.
     try std.testing.expect(std.mem.indexOf(u8, err, "\"status\":\"409\"") != null);
+}
+
+// ── domain flags: the namespace, enforced ────────────────────────────────────
+//
+// These tests exist because the split they cover is easy to get *arithmetically*
+// right and *architecturally* wrong. The allocator is keyed on the whole
+// `(parent, resourceId, domainFlag)` tuple, so separating devices from people by
+// slot name alone never produced a colliding index — and so nothing failed.
+// What it produced instead was one domain where there are two: identical header
+// flags, one schema-registry key, one context in a recovery enrolment.
+
+const cell_wire = @import("cell_wire");
+
+test "domains: the flag is folded into the key, not just the label" {
+    const a = std.testing.allocator;
+    const email = "split@fleet.example";
+    const salt = "split-salt-v1";
+
+    // Same parent, same index, same slot name — only the domain differs.
+    const as_device = try identity.deriveChildIdentity(a, email, salt, "root", "seat", domains.fleet_device, 0);
+    defer as_device.deinit(a);
+    const as_member = try identity.deriveChildIdentity(a, email, salt, "root", "seat", domains.org_member, 0);
+    defer as_member.deinit(a);
+
+    // Different keys. If this ever passes as equal, the flag has stopped
+    // reaching the invoice number and the namespaces have silently merged.
+    try std.testing.expect(!std.mem.eql(u8, &as_device.public_key_hex, &as_member.public_key_hex));
+    try std.testing.expect(!std.mem.eql(u8, &as_device.cert_id, &as_member.cert_id));
+    // ...and the path records which domain produced it, so a recovery replay
+    // cannot rebuild a person's seat into the device namespace.
+    try std.testing.expectEqualStrings("root/seat:15794178:0", as_member.derivation_path);
+    try std.testing.expectEqualStrings("root/seat:15794177:0", as_device.derivation_path);
+}
+
+test "domains: the flag is in the cell header where OP_CHECKDOMAINFLAG reads it" {
+    for ([_]u64{ domains.zone, domains.fleet_device, domains.org_member }) |flag| {
+        const cell = try cert.mintCell(
+            cert.typeHash(cert.capability_v0_type_name),
+            "payload",
+            "0123456789abcdef",
+            1_767_225_600_000,
+            @intCast(flag),
+        );
+        // Read back through cell_wire rather than a local offset constant, so
+        // this asserts agreement with the engine's own accessor.
+        try std.testing.expectEqual(@as(u32, @intCast(flag)), cell_wire.flags(cell[0..]));
+    }
+}
+
+test "domains: two domains produce different cells from identical payloads" {
+    const device = try cert.mintCell(cert.typeHash(cert.capability_v0_type_name), "payload", "0123456789abcdef", 1_767_225_600_000, @intCast(domains.fleet_device));
+    const member = try cert.mintCell(cert.typeHash(cert.capability_v0_type_name), "payload", "0123456789abcdef", 1_767_225_600_000, @intCast(domains.org_member));
+    try std.testing.expect(!std.mem.eql(u8, &device, &member));
+    // ...and they differ ONLY in the flag field, which is what makes the
+    // difference attributable rather than incidental.
+    try std.testing.expectEqualSlices(u8, device[0..cell_wire.Off.flags], member[0..cell_wire.Off.flags]);
+    try std.testing.expectEqualSlices(u8, device[cell_wire.Off.flags + 4 ..], member[cell_wire.Off.flags + 4 ..]);
+}
+
+test "domains: this layer never squats a flag the Plexus SDK allocates" {
+    for ([_]u64{ domains.fleet_device, domains.org_member }) |flag| {
+        try std.testing.expect(domains.isSovereign(flag));
+        for (domains.plexus_well_known) |wk| try std.testing.expect(flag != wk);
+    }
+    // The zone flag is the deliberate exception: it is well-known-band and
+    // semantos-core canonical (ZONE_KEY). It must NOT be sovereign, and it must
+    // not collide with anything the SDK has allocated — which is the registry
+    // gap `domains.zig` documents. If the SDK ever allocates 0x0e, this fails,
+    // which is the earliest anyone could learn of it.
+    try std.testing.expect(!domains.isSovereign(domains.zone));
+    for (domains.plexus_well_known) |wk| try std.testing.expect(domains.zone != wk);
+}
+
+test "domains: both planes agree on the flags, from the vector" {
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_CERT, .{});
+    defer parsed.deinit();
+    const flags = obj(parsed.value, "domainFlags");
+    try std.testing.expectEqual(domains.zone, @as(u64, @intCast(flags.object.get("zone").?.integer)));
+    try std.testing.expectEqual(domains.fleet_device, @as(u64, @intCast(flags.object.get("device").?.integer)));
+}
+
+test "domains: a mirrored person lands in the member domain, not the zone's" {
+    // Pins WHICH domain the SCIM mirror derives into, which nothing else did.
+    // Mutation testing found this: setting `member_flag = domains.zone` — every
+    // person derived into the zone namespace — passed the entire suite. It could,
+    // because the allocator is keyed on `(parent, resourceId, domainFlag)` and
+    // the resourceIds already differ, so no index ever collided and no assertion
+    // ever looked at the flag. That is the whole failure mode this file exists to
+    // catch: a namespace merge that is arithmetically invisible.
+    const a = std.testing.allocator;
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    var m = try openMirror(a, &s);
+    defer m.deinit();
+
+    const zone = try m.putZone("grp-eng", "Engineering");
+    const seat = try m.putUser("okta-0001", "grp-eng", "Alice", true);
+
+    // The flag is in the path, so these assertions read the derivation itself
+    // rather than the constant that produced it.
+    try std.testing.expectEqualStrings("root/zone:14:0", zone.derivation_path);
+    try std.testing.expectEqualStrings("root/zone:14:0/member:15794178:0", seat.seat.?.derivation_path);
+
+    // And the store agrees with the derivation — a mirror that recorded one
+    // domain while deriving under another would rebuild into the wrong namespace.
+    const root = try identity.rootIdentity(a, SCIM_EMAIL, SCIM_SALT);
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        try s.highWaterMark(&root.cert_id, scim.zone_resource, domains.zone),
+    );
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        try s.highWaterMark(&zone.cert_id, scim.member_resource, domains.org_member),
+    );
 }

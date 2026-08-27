@@ -45,6 +45,7 @@ const std = @import("std");
 const identity = @import("identity");
 const store_mod = @import("store");
 const Store = store_mod.Store;
+const domains = @import("domains");
 
 pub const Error = error{
     UnknownExternalId,
@@ -54,7 +55,19 @@ pub const Error = error{
 
 pub const zone_resource = "zone";
 pub const member_resource = "member";
-pub const child_flag: u64 = 6; // CHILD_CREATION
+
+/// The two domains this mirror derives into.
+///
+/// These were both `CHILD_CREATION` (0x06) until the namespace split. That was
+/// wrong in a way arithmetic hid: the allocator is keyed on the whole
+/// `(parent, resourceId, domainFlag)` tuple, so people and devices never
+/// collided on an index — but they were the SAME domain to every layer below
+/// this one. A cell minted for a person carried the same header flag as one
+/// minted for a device, so `OP_CHECKDOMAINFLAG` could not tell them apart, the
+/// schema registry could not key them apart, and a Plexus enrolment recorded
+/// one context where there are two.
+pub const zone_flag: u64 = domains.zone;
+pub const member_flag: u64 = domains.org_member;
 
 /// What a mirrored operation did. Returned so a caller can log the truth rather
 /// than assuming — a retried create and a first create are not the same event.
@@ -137,14 +150,14 @@ pub const Mirror = struct {
     pub fn putZone(self: *Mirror, external_id: []const u8, display_name: []const u8) !Zone {
         if (self.zones.get(external_id)) |z| return z;
 
-        const index = try self.store.allocateIndex(&self.root_cert_id, zone_resource, child_flag);
+        const index = try self.store.allocateIndex(&self.root_cert_id, zone_resource, zone_flag);
         const node = try identity.deriveChildIdentity(
             self.allocator,
             self.email,
             self.salt,
             "root",
             zone_resource,
-            child_flag,
+            zone_flag,
             index,
         );
         errdefer node.deinit(self.allocator);
@@ -153,7 +166,7 @@ pub const Mirror = struct {
             .cert_id = &node.cert_id,
             .parent_cert_id = &self.root_cert_id,
             .resource_id = zone_resource,
-            .domain_flag = child_flag,
+            .domain_flag = zone_flag,
             .child_index = index,
             .label = display_name,
         });
@@ -213,14 +226,14 @@ pub const Mirror = struct {
         zone: Zone,
         display_name: []const u8,
     ) !Seat {
-        const index = try self.store.allocateIndex(&zone.cert_id, member_resource, child_flag);
+        const index = try self.store.allocateIndex(&zone.cert_id, member_resource, member_flag);
         const node = try identity.deriveChildIdentity(
             self.allocator,
             self.email,
             self.salt,
             zone.derivation_path,
             member_resource,
-            child_flag,
+            member_flag,
             index,
         );
         self.allocator.free(node.invoice_number);
@@ -230,7 +243,7 @@ pub const Mirror = struct {
             .cert_id = &node.cert_id,
             .parent_cert_id = &zone.cert_id,
             .resource_id = member_resource,
-            .domain_flag = child_flag,
+            .domain_flag = member_flag,
             .child_index = index,
             .label = display_name,
         });
@@ -260,7 +273,7 @@ pub const Mirror = struct {
         const entry = self.seats.getEntry(external_id) orelse return Error.UnknownExternalId;
         if (!entry.value_ptr.active) return Error.UnknownExternalId;
         const zone = self.zones.get(entry.value_ptr.zone_external_id) orelse return Error.ZoneNotFound;
-        const mark = try self.store.burnSlot(&zone.cert_id, member_resource, child_flag);
+        const mark = try self.store.burnSlot(&zone.cert_id, member_resource, member_flag);
         // The record is KEPT and marked inactive rather than dropped. Forgetting
         // it would make a later reactivation indistinguishable from a first
         // create, which is a lie in the audit trail and hides that the person

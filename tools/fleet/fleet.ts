@@ -45,6 +45,23 @@ export const SLOT = {
   device: "device",
 } as const;
 
+/**
+ * Domain flags — the namespace the runtime actually enforces.
+ *
+ * A slot name is a label. A domain flag is folded into the BRC-42 invoice, is
+ * carried in the cell header at bytes 24-27, is asserted in-engine by
+ * OP_CHECKDOMAINFLAG, keys the schema registry, and is what a Plexus recovery
+ * enrolment records per context. Separating devices from people by slot name
+ * alone would be invisible to every one of those.
+ *
+ * ZONE is semantos-core canonical (constants.json domainFlags.ZONE_KEY).
+ * FLEET_DEVICE is this layer's, in the client-sovereign band.
+ */
+export const DOMAIN = {
+  zone: 0x0e,
+  device: 0x00f1_0001,
+} as const;
+
 /** `UINT64_MAX` — what the firmware reads as "no expiry", until it has an RTC. */
 export const NO_EXPIRY = 0xffffffffffffffffn;
 
@@ -97,7 +114,7 @@ export class Fleet {
   /** Create a site, depot, or any other grouping of units. */
   async addZone(label: string): Promise<FleetNode> {
     const rootCertId = await this.deriver.rootCertId();
-    return this.deriver.derive(rootCertId, SLOT.zone, label);
+    return this.deriver.derive(rootCertId, SLOT.zone, label, DOMAIN.zone);
   }
 
   /**
@@ -112,7 +129,7 @@ export class Fleet {
     label: string,
     expiryMs?: bigint,
   ): Promise<DeviceProvision> {
-    const node = await this.deriver.derive(zone.certId, SLOT.device, label);
+    const node = await this.deriver.derive(zone.certId, SLOT.device, label, DOMAIN.device);
     return this.issueCert(node, expiryMs ?? this.defaultExpiryMs);
   }
 
@@ -129,7 +146,7 @@ export class Fleet {
    * @returns the index the next unit provisioned into this zone will occupy
    */
   async decommission(zone: FleetNode): Promise<number> {
-    return this.deriver.burnSlot(zone.certId, SLOT.device);
+    return this.deriver.burnSlot(zone.certId, SLOT.device, DOMAIN.device);
   }
 
   /** Re-issue a cert for an existing unit — a renewal, not a new identity. */
@@ -157,6 +174,7 @@ export class Fleet {
       certPayload,
       operatorPk.subarray(0, 16),
       validFromMs,
+      DOMAIN.device,
     );
     const certSig = await this.deriver.signAsOperator(certCell);
     return {

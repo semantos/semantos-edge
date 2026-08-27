@@ -132,14 +132,15 @@ export const openPlexusDeriver = async (
     parentCertId: string,
     resourceId: string,
     nextIndex: number,
+    domainFlag: number = CHILD_CREATION,
   ): void => {
-    const key = `${parentCertId}|${resourceId}|${CHILD_CREATION}`;
+    const key = `${parentCertId}|${resourceId}|${domainFlag}`;
     const seen = ceilings.get(key);
     if (!seen || nextIndex > seen.nextIndex) {
       ceilings.set(key, {
         parentCertId,
         resourceId,
-        domainFlag: CHILD_CREATION,
+        domainFlag,
         nextIndex,
       });
     }
@@ -158,22 +159,23 @@ export const openPlexusDeriver = async (
       parentCertId: string,
       resourceId: string,
       label: string,
+      domainFlag: number = CHILD_CREATION,
     ): Promise<FleetNode> {
       const child = await client.deriveChild(
         parentCertId,
         resourceId,
-        CHILD_CREATION,
+        domainFlag,
       );
       await client.setNodeMetadata(child.certId, "label", label);
       nodes.push({
         certId: child.certId,
         parentCertId,
         resourceId,
-        domainFlag: CHILD_CREATION,
+        domainFlag,
         index: child.childIndex,
         label,
       });
-      bumpCeiling(parentCertId, resourceId, child.childIndex + 1);
+      bumpCeiling(parentCertId, resourceId, child.childIndex + 1, domainFlag);
       return {
         certId: child.certId,
         publicKey: hexToBytes(child.publicKey),
@@ -183,13 +185,13 @@ export const openPlexusDeriver = async (
       };
     },
 
-    async burnSlot(parentCertId: string, resourceId: string): Promise<number> {
+    async burnSlot(parentCertId: string, resourceId: string, domainFlag: number = CHILD_CREATION): Promise<number> {
       const mark = await client.rotateContext(
         parentCertId,
         resourceId,
-        CHILD_CREATION,
+        domainFlag,
       );
-      bumpCeiling(parentCertId, resourceId, mark);
+      bumpCeiling(parentCertId, resourceId, mark, domainFlag);
       return mark;
     },
 

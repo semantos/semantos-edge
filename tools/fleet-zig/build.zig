@@ -14,6 +14,12 @@ pub fn build(b: *std.Build) void {
     });
     derive_mod.addImport("bsvz", bsvz.module("bsvz"));
 
+    const domains_mod = b.addModule("domains", .{
+        .root_source_file = b.path("src/domains.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const certid_mod = b.addModule("certid", .{
         .root_source_file = b.path("src/certid.zig"),
         .target = target,
@@ -68,6 +74,7 @@ pub fn build(b: *std.Build) void {
     });
     scim_mod.addImport("identity", identity_mod);
     scim_mod.addImport("store", store_mod);
+    scim_mod.addImport("domains", domains_mod);
 
     const scim_wire_mod = b.addModule("scim_wire", .{
         .root_source_file = b.path("src/scim_wire.zig"),
@@ -93,6 +100,8 @@ pub fn build(b: *std.Build) void {
     conformance.root_module.addImport("recovery", recovery_mod);
     conformance.root_module.addImport("scim", scim_mod);
     conformance.root_module.addImport("scim_wire", scim_wire_mod);
+    conformance.root_module.addImport("domains", domains_mod);
+    conformance.root_module.addImport("cell_wire", cell_wire_mod);
     conformance.root_module.addAnonymousImport("golden", .{
         .root_source_file = b.path("vectors/cross-impl-derivation.golden.json"),
     });
@@ -127,6 +136,7 @@ pub fn build(b: *std.Build) void {
     hw.root_module.addImport("derive", derive_mod);
     hw.root_module.addImport("identity", identity_mod);
     hw.root_module.addImport("cert", cert_mod);
+    hw.root_module.addImport("domains", domains_mod);
     b.installArtifact(hw);
     const run_hw = b.addRunArtifact(hw);
     b.step("hw", "run the hardware proof against two C6 boards").dependOn(&run_hw.step);
@@ -142,6 +152,7 @@ pub fn build(b: *std.Build) void {
     exporter.root_module.addImport("identity", identity_mod);
     exporter.root_module.addImport("store", store_mod);
     exporter.root_module.addImport("recovery", recovery_mod);
+    exporter.root_module.addImport("domains", domains_mod);
     b.installArtifact(exporter);
     const run_export = b.addRunArtifact(exporter);
     b.step("export-recipe", "print a recovery recipe on stdout").dependOn(&run_export.step);

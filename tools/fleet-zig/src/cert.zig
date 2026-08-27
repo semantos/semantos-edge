@@ -92,22 +92,30 @@ pub fn typeHash(name: []const u8) [32]u8 {
 
 pub const capability_v0_type_name = "cellmesh.capability.v0";
 
-/// Mint a 1 KB cell carrying `payload`.
+/// Mint a 1 KB cell carrying `payload`, in a declared domain.
 ///
 /// Offsets and magic come from `cell_wire`; only the fields this cell kind uses
 /// are written here. `domain_payload_root` is SHA-256 over the whole 768-byte
 /// payload REGION — the zero padding included, not just the used prefix.
+///
+/// `domain_flag` lands at bytes 24-27, where `OP_CHECKDOMAINFLAG` reads it.
 pub fn mintCell(
     type_hash: [32]u8,
     payload: []const u8,
     owner_id: []const u8,
     timestamp_ms: u64,
+    domain_flag: u32,
 ) ![cell_size]u8 {
     if (payload.len > payload_size) return Error.PayloadTooLarge;
 
     var cell: [cell_size]u8 = [_]u8{0} ** cell_size;
     wire.initBytes(cell[0..]);
     wire.writeU32(cell[wire.Off.linearity..], @intFromEnum(wire.Linearity.affine));
+    // Bytes 24-27. This is what OP_CHECKDOMAINFLAG reads, and leaving it zero
+    // is why that opcode had nothing to assert against: a cell with no declared
+    // domain cannot be gated on one. Writing it is what turns the domain from a
+    // label in the control plane into something the engine enforces.
+    wire.writeU32(cell[wire.Off.flags..], domain_flag);
     wire.setVersion(cell[0..], wire.version);
     @memcpy(cell[wire.Off.type_hash..][0..32], &type_hash);
     const owner_len = @min(owner_id.len, 16);

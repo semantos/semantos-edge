@@ -77,7 +77,10 @@ withSdk("fleet identity — provisioning", () => {
     // Position is the identity: zone 0, device 0.
     expect(zone.index).toBe(0);
     expect(unit.node.index).toBe(0);
-    expect(unit.node.derivationPath).toBe("root/zone:6:0/device:6:0");
+    // The domain flag is IN the path, which is the point: a zone (0x0e) and a
+    // device (0xf10001) are different namespaces at the key level, not just
+    // differently-labelled slots. 0xf10001 = 15794177.
+    expect(unit.node.derivationPath).toBe("root/zone:14:0/device:15794177:0");
     await fleet.close();
   });
 

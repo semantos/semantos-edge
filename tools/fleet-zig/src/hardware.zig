@@ -26,6 +26,7 @@ const std = @import("std");
 const derive = @import("derive");
 const identity = @import("identity");
 const cert = @import("cert");
+const domains = @import("domains");
 
 /// Must match the anchor compiled into the boards — see `bun run fleet:anchor`
 /// and `USE_FLEET_ANCHOR` in examples/mesh_demo/main/main.c.
@@ -221,9 +222,9 @@ pub fn main() !void {
     const operator_key = try derive.derivePrivateKeyAtPath(ROOT_EMAIL, ROOT_SALT, "root");
     const anchor = try derive.pubHex(operator_key);
 
-    const zone = try identity.deriveChildIdentity(a, ROOT_EMAIL, ROOT_SALT, "root", "zone", 6, 0);
+    const zone = try identity.deriveChildIdentity(a, ROOT_EMAIL, ROOT_SALT, "root", "zone", domains.zone, 0);
     defer zone.deinit(a);
-    const unit = try identity.deriveChildIdentity(a, ROOT_EMAIL, ROOT_SALT, zone.derivation_path, "device", 6, 0);
+    const unit = try identity.deriveChildIdentity(a, ROOT_EMAIL, ROOT_SALT, zone.derivation_path, "device", domains.fleet_device, 0);
     defer unit.deinit(a);
 
     const channel = try cert.channelIdFor(&unit.cert_id);
@@ -248,6 +249,7 @@ pub fn main() !void {
         &payload,
         anchor_bytes[0..16],
         @intCast(std.time.milliTimestamp()),
+        domains.fleet_device,
     );
     const sig = try cert.signCell(operator_key, &cell);
     std.debug.print("  cert payload     {d} bytes, cell {d} bytes, sig {d} bytes\n", .{ payload.len, cell.len, sig.len });

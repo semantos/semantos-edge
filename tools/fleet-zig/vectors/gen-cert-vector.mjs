@@ -29,7 +29,7 @@
 
 import { writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { Fleet } from "../../fleet/fleet.js";
+import { Fleet, DOMAIN } from "../../fleet/fleet.js";
 import { openPlexusDeriver } from "../../fleet/plexus-deriver.js";
 
 const ROOT_EMAIL = "operator@fleet.example";
@@ -48,7 +48,7 @@ const fleet = new Fleet({ deriver });
 
 const anchor = await fleet.operatorPublicKey();
 const zone = await fleet.addZone("North Depot");
-const node = await deriver.derive(zone.certId, "device", "cold-chain-01");
+const node = await deriver.derive(zone.certId, "device", "cold-chain-01", DOMAIN.device);
 const unit = await fleet.issueCert(node, NO_EXPIRY, VALID_FROM_MS);
 
 // A SECOND cert with a real, non-maximal expiry. The default expiry is
@@ -56,7 +56,7 @@ const unit = await fleet.issueCert(node, NO_EXPIRY, VALID_FROM_MS);
 // vector carrying only that value cannot catch a byte-order mistake in the
 // expiry field. This one has distinguishable bytes in every octet.
 const REAL_EXPIRY_MS = 0x0123456789abcdefn;
-const node2 = await deriver.derive(zone.certId, "device", "cold-chain-02");
+const node2 = await deriver.derive(zone.certId, "device", "cold-chain-02", DOMAIN.device);
 const unit2 = await fleet.issueCert(node2, REAL_EXPIRY_MS, VALID_FROM_MS);
 
 // The DEMO fleet the boards are actually flashed for. Emitted so the Zig plane's
@@ -69,7 +69,7 @@ const hwDeriver = await openPlexusDeriver({ rootEmail: HW_EMAIL, rootSalt: HW_SA
 const hwFleet = new Fleet({ deriver: hwDeriver });
 const hwAnchor = await hwFleet.operatorPublicKey();
 const hwZone = await hwFleet.addZone("North Depot");
-const hwNode = await hwDeriver.derive(hwZone.certId, "device", "cold-chain-01");
+const hwNode = await hwDeriver.derive(hwZone.certId, "device", "cold-chain-01", DOMAIN.device);
 const hwUnit = await hwFleet.issueCert(hwNode, NO_EXPIRY, VALID_FROM_MS);
 await hwFleet.close();
 
@@ -84,6 +84,12 @@ const out = {
   generator: "vectors/gen-cert-vector.mjs",
   universe: { rootEmail: ROOT_EMAIL, rootSalt: ROOT_SALT },
   validFromMs: VALID_FROM_MS.toString(),
+  // The namespace, carried three places at once: folded into the BRC-42 invoice
+  // (so it is visible in derivationPath), written to cell header bytes 24-27
+  // (so OP_CHECKDOMAINFLAG can assert it), and recorded per context in a
+  // recovery enrolment. Both planes must agree on all three or the cell bytes
+  // diverge.
+  domainFlags: { zone: DOMAIN.zone, device: DOMAIN.device },
   expiryMs: NO_EXPIRY.toString(),
   operatorPubKeyHex: hex(anchor),
   zone: {

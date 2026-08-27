@@ -66,11 +66,18 @@ export interface FleetDeriver {
    */
   operatorPublicKey(): Promise<CompressedPubKey>;
 
-  /** Derive the next child at a slot, returning public material only. */
+  /**
+   * Derive the next child at a slot, returning public material only.
+   *
+   * `domainFlag` is the namespace, and it is not decoration: it is folded into
+   * the BRC-42 invoice, carried in the cell header, asserted in-engine by
+   * OP_CHECKDOMAINFLAG, and recorded per context in a recovery enrolment.
+   */
   derive(
     parentCertId: string,
     resourceId: string,
     label: string,
+    domainFlag: number,
   ): Promise<FleetNode>;
 
   /**
@@ -78,7 +85,7 @@ export interface FleetDeriver {
    *
    * @returns the new high-water mark — the index the next `derive` will receive
    */
-  burnSlot(parentCertId: string, resourceId: string): Promise<number>;
+  burnSlot(parentCertId: string, resourceId: string, domainFlag: number): Promise<number>;
 
   /**
    * Sign a cell as the operator. The signing key is never returned, so a fleet

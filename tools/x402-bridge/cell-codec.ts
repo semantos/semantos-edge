@@ -22,6 +22,7 @@ export const PAYLOAD_SIZE = 768;
 const CELL_VERSION = 2;
 const MAGIC = [0xdeadbeef, 0xcafebabe, 0x13371337, 0x42424242];
 
+const OFF_FLAGS = 24;
 const OFF_LINEARITY = 16;
 const OFF_VERSION = 20;
 const OFF_TYPE_HASH = 30;
@@ -69,15 +70,33 @@ export function typeHash(name: string): Uint8Array {
   return sha256(new TextEncoder().encode(name));
 }
 
+/**
+ * No domain declared.
+ *
+ * Named rather than a bare literal so it is greppable: every cell minted with
+ * this value is one `OP_CHECKDOMAINFLAG` cannot gate, because there is nothing
+ * at header bytes 24-27 to assert against. The bridge demos in this directory
+ * all mint undeclared, which is the state the whole codebase was in before the
+ * fleet plane started declaring — fine for a demo, not fine for anything a
+ * runtime is meant to enforce.
+ */
+export const DOMAIN_UNDECLARED = 0;
+
 export const ACTUATOR_OFFER_TYPE = typeHash('cellmesh.actuator_offer.v0');
 export const ACTUATOR_ACTIVATE_TYPE = typeHash('cellmesh.actuator_activate.v0');
 
 // ── cell mint + sign ─────────────────────────────────────────────────
-export function mintCell(typeHashBytes: Uint8Array, payload: Uint8Array, ownerId: Uint8Array, timestampMs: bigint): Uint8Array {
+export function mintCell(typeHashBytes: Uint8Array, payload: Uint8Array, ownerId: Uint8Array, timestampMs: bigint, domainFlag: number = DOMAIN_UNDECLARED): Uint8Array {
   if (payload.length > PAYLOAD_SIZE) throw new Error('payload too big');
   const cell = new Uint8Array(CELL_SIZE);
   for (let i = 0; i < 4; i++) writeU32LE(cell, i * 4, MAGIC[i]);
   writeU32LE(cell, OFF_LINEARITY, LINEARITY_AFFINE);
+  // Bytes 24-27 — what OP_CHECKDOMAINFLAG reads. Until this line existed the
+  // field was never written at all, so every cell either plane had ever minted
+  // declared domain 0 and the opcode had nothing to assert. The default keeps
+  // the ~20 existing bridge callers byte-identical; callers that mean to be
+  // enforceable pass a real flag.
+  writeU32LE(cell, OFF_FLAGS, domainFlag);
   writeU32LE(cell, OFF_VERSION, CELL_VERSION);
   cell.set(typeHashBytes, OFF_TYPE_HASH);
   cell.set(ownerId.subarray(0, 16), OFF_OWNER_ID);

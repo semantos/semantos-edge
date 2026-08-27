@@ -84,6 +84,15 @@ It also carries `hardwareParityCase` — the demo fleet the C6 boards are flashe
 for — so the Zig plane's agreement with the TypeScript one is a test rather than
 something noticed during a hardware run.
 
+And it carries `domainFlags`. The conformance tests mint from THAT rather than
+from `domains.zig`, so regenerating the vector without regenerating the cells —
+or changing a flag in one plane only — fails instead of quietly passing. The
+flag lands in three places at once: folded into the BRC-42 invoice (visible in
+`derivationPath`), written to cell header bytes 24-27 (where
+`OP_CHECKDOMAINFLAG` reads it), and recorded per context in `functionalDomains`
+when a recipe is enrolled. Both planes must agree on all three or the cell bytes
+diverge.
+
 
 ## `recovery.golden.json`
 
