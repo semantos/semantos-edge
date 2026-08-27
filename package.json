@@ -26,7 +26,9 @@
     "zig:test:c-abi": "components/cell-mesh-zig/run-c-abi-tests.sh",
     "test": "bun test",
     "fleet:demo": "bun tools/fleet/provision.ts",
-    "fleet:test": "bun test tools/fleet/"
+    "fleet:test": "bun test tools/fleet/",
+    "fleet:anchor": "bun tools/fleet/anchor.ts",
+    "fleet:hw": "bun tools/fleet/hardware.ts"
   },
   "dependencies": {
     "@bsv/sdk": "^2.0.0"

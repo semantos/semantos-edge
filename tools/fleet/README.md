@@ -89,6 +89,50 @@ exactly this with a control plane that has never seen the fleet.
 material — which is what a rebuilt fleet needs so it does not reissue a live
 unit's index.
 
+## On real hardware
+
+Verified on two XIAO ESP32-C6 boards, 2026-08-27.
+
+```bash
+bun run fleet:anchor                 # print the trust anchor as a C array
+# paste into examples/mesh_demo/main/main.c (USE_FLEET_ANCHOR 1)
+cd examples/mesh_demo && idf.py set-target esp32c6 && idf.py build
+idf.py -p /dev/cu.usbmodemA flash && idf.py -p /dev/cu.usbmodemB flash
+cd ../.. && bun run fleet:hw         # discovers both boards
+```
+
+```
+2. Inject the cert — the board must accept and install it
+   board said: I (229849) mesh_demo: CAP cert installed: ch=9fce30f7... edge=03e7b74f...
+   ACCEPTED — and it echoed back ch=9fce30f7… edge=03e7b74f… (matches what we derived)
+
+3. Flip one byte — the board must refuse it
+   board said: W (232489) mesh_demo: RX [58:e6:c5:1a:8b:28] signature INVALID (wallet pubkey)
+   REJECTED — the tamper did not survive cm_sig_verify
+
+4. Sign with the OLD demo key — the board must refuse that too
+   legacy signer pubkey  03079264c4b4bfcd7fe3a7b7b92b6c439f3a5b3abcd29189bf7b54d781ff03d722
+   board said: W (235079) mesh_demo: RX [58:e6:c5:1a:8b:28] signature INVALID (wallet pubkey)
+   REJECTED — the board trusts the fleet root, not the key it shipped with
+```
+
+Step 4 is the one that makes steps 2 and 3 mean anything. Without it, "the board
+accepted our cert" could just as easily be "the board accepts whatever arrives".
+
+**Two boards are required**, and the reason is in the firmware: with
+`DEMO_SCRIPT_ONLY` the board you inject into does not process the cell itself —
+it ack-blinks, then broadcasts over ESP-NOW after `DEMO_BROADCAST_DELAY_MS`, and
+the *other* board verifies and installs. That is also the honest shape, since it
+puts a real radio hop between the operator and the device.
+
+The `#define USE_FLEET_ANCHOR 1` in `main.c` switches between the fleet root and
+the original `sign-cell-deck` demo key, so reverting is one flag.
+
+⚠ The default fleet root is a **demo root whose salt is in this repo**, so its
+private key is public — exactly like the `…0042` key it replaces. Fine for boards
+on a desk. Set `FLEET_ROOT_EMAIL` / `FLEET_ROOT_SALT` from somewhere private
+before flashing anything you care about.
+
 ## Setup
 
 The Plexus SDK is a private package, so it is imported dynamically from a path

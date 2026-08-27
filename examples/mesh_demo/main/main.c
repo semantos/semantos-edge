@@ -67,6 +67,25 @@ static const char *TAG = "mesh_demo";
 //
 // To rotate: change WALLET_PRIVKEY_HEX in sign-cell-deck.ts, re-run,
 // update the hex below with the printed pubkey, rebuild.
+// Set to 1 to trust a Plexus-derived FLEET operator root instead of the
+// standalone sign-cell-deck demo key. Regenerate the array with
+// `bun run fleet:anchor` (tools/fleet/anchor.ts) — it prints exactly this
+// block for whatever FLEET_ROOT_EMAIL / FLEET_ROOT_SALT you derive under.
+#define USE_FLEET_ANCHOR 1
+
+#if USE_FLEET_ANCHOR
+// Fleet operator trust anchor, derived not invented.
+//   universe: operator@fleet.example  (DEMO root — salt is in the repo)
+//   pubkey  : 0245ad80f7eb6d2222ad6741fe6aa6a9b51d5571c6945a43813cf4b71b5441e6d6
+static const uint8_t s_wallet_pubkey[CM_SIG_PUBKEY_COMPRESSED] = {
+    0x02, 0x45, 0xad, 0x80, 0xf7, 0xeb, 0x6d, 0x22,
+    0x22, 0xad, 0x67, 0x41, 0xfe, 0x6a, 0xa6, 0xa9,
+    0xb5, 0x1d, 0x55, 0x71, 0xc6, 0x94, 0x5a, 0x43,
+    0x81, 0x3c, 0xf4, 0xb7, 0x1b, 0x54, 0x41, 0xe6,
+    0xd6,
+};
+#else
+// Original sign-cell-deck demo key (WALLET_PRIVKEY_HEX = ...0042).
 static const uint8_t s_wallet_pubkey[CM_SIG_PUBKEY_COMPRESSED] = {
     0x03, 0x07, 0x92, 0x64, 0xc4, 0xb4, 0xbf, 0xcd,
     0x7f, 0xe3, 0xa7, 0xb7, 0xb9, 0x2b, 0x6c, 0x43,
@@ -74,6 +93,7 @@ static const uint8_t s_wallet_pubkey[CM_SIG_PUBKEY_COMPRESSED] = {
     0xbf, 0x7b, 0x54, 0xd7, 0x81, 0xff, 0x03, 0xd7,
     0x22,
 };
+#endif
 
 // ── Cell types — type_hash = SHA-256 of the type name ────────────────
 static const char HEARTBEAT_TYPE_NAME[]     = "cellmesh.heartbeat.v0";
