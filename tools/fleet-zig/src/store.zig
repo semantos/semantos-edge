@@ -64,6 +64,14 @@ fn contextKey(
     );
 }
 
+/// One rung of an ancestry: the slot a node sits in, without its identity.
+/// Used when rebuilding a derivation path from parent links.
+pub const NodeView = struct {
+    resource_id: []const u8,
+    domain_flag: u64,
+    child_index: u64,
+};
+
 pub const Store = struct {
     allocator: std.mem.Allocator,
     /// context key -> next free index. The single allocator.

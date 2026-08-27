@@ -1170,3 +1170,200 @@ test "hardware parity: the Zig plane derives what the TypeScript plane flashed" 
     _ = try std.fmt.bufPrint(&chan_hex, "{x}", .{&channel});
     try std.testing.expectEqualStrings(str(c, "channelIdHex"), &chan_hex);
 }
+
+// ── recovery recipes ─────────────────────────────────────────────────────────
+
+const recovery = @import("recovery");
+const GOLDEN_RECOVERY = @embedFile("golden_recovery");
+
+test "recovery: importing the SDK's own payloads reproduces its allocator, case for case" {
+    // Driven from the SDK's real reconstituteFromRecoveryExport, so this checks
+    // behaviour rather than my reading of the recipe format. The interesting
+    // cases are the ones where the payload is WRONG and must not be trusted.
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_RECOVERY, .{});
+    defer parsed.deinit();
+
+    const universe = obj(parsed.value, "universe");
+    const email = str(universe, "rootEmail");
+    const salt = str(universe, "rootSalt");
+    const root_cert = str(parsed.value, "rootCertId");
+    const resource = str(parsed.value, "resourceId");
+    const flag: u64 = @intCast(int(parsed.value, "domainFlag"));
+
+    // Rebuild each case's payload from the vector's shared paths plus its own
+    // functionalDomains, so the only thing varying is the counter under test.
+    const paths_json = try std.json.Stringify.valueAlloc(a, obj(parsed.value, "tenantPaths"), .{});
+    defer a.free(paths_json);
+
+    const cases = arr(parsed.value, "cases");
+    try std.testing.expect(cases.len >= 5);
+    for (cases) |c| {
+        const fds_json = try std.json.Stringify.valueAlloc(a, obj(c, "functionalDomains"), .{});
+        defer a.free(fds_json);
+
+        const payload = try std.fmt.allocPrint(a,
+            "{{\"schemaVersion\":\"v1\",\"certId\":\"{s}\",\"email\":\"{s}\"," ++
+            "\"resourceRegistrations\":[],\"edges\":[],\"algorithmVersions\":[]," ++
+            "\"tenantPaths\":{s},\"functionalDomains\":{s}}}",
+            .{ root_cert, email, paths_json, fds_json });
+        defer a.free(payload);
+
+        var s = Store.initMemory(a);
+        defer s.deinit();
+        const res = try recovery.importRecipe(a, &s, email, salt, payload);
+        try std.testing.expectEqualStrings(root_cert, res.root_cert_id);
+
+        const got = try s.allocateIndex(root_cert, resource, flag);
+        try std.testing.expectEqual(@as(u64, @intCast(int(c, "nextAllocation"))), got);
+    }
+}
+
+test "recovery: a poisoned counter is floored, and the flooring is reported" {
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_RECOVERY, .{});
+    defer parsed.deinit();
+    const universe = obj(parsed.value, "universe");
+    const email = str(universe, "rootEmail");
+    const salt = str(universe, "rootSalt");
+    const root_cert = str(parsed.value, "rootCertId");
+
+    const paths_json = try std.json.Stringify.valueAlloc(a, obj(parsed.value, "tenantPaths"), .{});
+    defer a.free(paths_json);
+
+    for (arr(parsed.value, "cases")) |c| {
+        const label = str(c, "label");
+        const poisoned = std.mem.eql(u8, label, "poisoned") or std.mem.eql(u8, label, "omitted");
+        const fds_json = try std.json.Stringify.valueAlloc(a, obj(c, "functionalDomains"), .{});
+        defer a.free(fds_json);
+        const payload = try std.fmt.allocPrint(a,
+            "{{\"schemaVersion\":\"v1\",\"certId\":\"{s}\",\"email\":\"{s}\"," ++
+            "\"resourceRegistrations\":[],\"edges\":[],\"algorithmVersions\":[]," ++
+            "\"tenantPaths\":{s},\"functionalDomains\":{s}}}",
+            .{ root_cert, email, paths_json, fds_json });
+        defer a.free(payload);
+
+        var s = Store.initMemory(a);
+        defer s.deinit();
+        const res = try recovery.importRecipe(a, &s, email, salt, payload);
+        // A payload that would have rewound says so, rather than doing it quietly.
+        if (poisoned) {
+            try std.testing.expect(res.floored > 0);
+        } else {
+            try std.testing.expectEqual(@as(usize, 0), res.floored);
+        }
+    }
+}
+
+test "recovery: a path that does not re-derive to its own certId is refused" {
+    // The other half of not trusting the payload. A recipe cannot introduce a
+    // node the operator root would never have derived.
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_RECOVERY, .{});
+    defer parsed.deinit();
+    const universe = obj(parsed.value, "universe");
+    const email = str(universe, "rootEmail");
+    const salt = str(universe, "rootSalt");
+    const root_cert = str(parsed.value, "rootCertId");
+    const resource = str(parsed.value, "resourceId");
+    const flag: u64 = @intCast(int(parsed.value, "domainFlag"));
+
+    const payload = try std.fmt.allocPrint(a,
+        "{{\"schemaVersion\":\"v1\",\"certId\":\"{s}\",\"email\":\"{s}\"," ++
+        "\"resourceRegistrations\":[],\"edges\":[],\"algorithmVersions\":[]," ++
+        "\"functionalDomains\":[]," ++
+        "\"tenantPaths\":[{{\"certId\":\"{s}\",\"resourceId\":\"{s}\",\"parentCertId\":\"{s}\"," ++
+        "\"steps\":[{{\"tenantType\":0,\"childIndex\":0,\"resourceId\":\"{s}\",\"domainFlag\":{d}}}]}}]}}",
+        .{ root_cert, email, "de" ** 32, resource, root_cert, resource, flag });
+    defer a.free(payload);
+
+    var s = Store.initMemory(a);
+    defer s.deinit();
+    try std.testing.expectError(
+        recovery.Error.PathDoesNotDerive,
+        recovery.importRecipe(a, &s, email, salt, payload),
+    );
+}
+
+test "recovery: a fleet round-trips through export and import" {
+    const a = std.testing.allocator;
+    const email = "roundtrip@fleet.example";
+    const salt = "roundtrip-salt";
+
+    const root = try identity.rootIdentity(a, email, salt);
+
+    // Provision: two zones, some units, and a burn so a retired index is in play.
+    var origin = Store.initMemory(a);
+    defer origin.deinit();
+
+    var expected: [3][66]u8 = undefined;
+    {
+        const zi = try origin.allocateIndex(&root.cert_id, "zone", 6);
+        const zone = try identity.deriveChildIdentity(a, email, salt, "root", "zone", 6, zi);
+        defer zone.deinit(a);
+        try origin.putNode(.{ .cert_id = &zone.cert_id, .parent_cert_id = &root.cert_id, .resource_id = "zone", .domain_flag = 6, .child_index = zi, .label = "north" });
+
+        for (0..2) |n| {
+            const di = try origin.allocateIndex(&zone.cert_id, "device", 6);
+            const unit = try identity.deriveChildIdentity(a, email, salt, zone.derivation_path, "device", 6, di);
+            defer unit.deinit(a);
+            try origin.putNode(.{ .cert_id = &unit.cert_id, .parent_cert_id = &zone.cert_id, .resource_id = "device", .domain_flag = 6, .child_index = di, .label = "unit" });
+            expected[n] = unit.public_key_hex;
+        }
+        // Retire a slot, so the recipe must carry a mark above the paths.
+        _ = try origin.burnSlot(&zone.cert_id, "device", 6);
+    }
+
+    const recipe = try recovery.exportRecipe(a, &origin, &root.cert_id, email);
+    defer a.free(recipe);
+    // A recipe carries no key material — the whole reason it can be handed to a
+    // service that is assumed adversarial.
+    try std.testing.expect(std.mem.indexOf(u8, recipe, "priv") == null);
+    try std.testing.expect(std.mem.indexOf(u8, recipe, salt) == null);
+
+    // Rebuild from the recipe and the root alone.
+    var rebuilt = Store.initMemory(a);
+    defer rebuilt.deinit();
+    const res = try recovery.importRecipe(a, &rebuilt, email, salt, recipe);
+    try std.testing.expectEqualStrings(&root.cert_id, res.root_cert_id);
+    try std.testing.expectEqual(@as(usize, 3), res.nodes); // zone + 2 units
+    try std.testing.expectEqual(@as(usize, 0), res.floored); // an honest recipe floors nothing
+
+    // The same units re-derive to the same keys...
+    const zone2 = try identity.deriveChildIdentity(a, email, salt, "root", "zone", 6, 0);
+    defer zone2.deinit(a);
+    for (0..2) |n| {
+        const unit = try identity.deriveChildIdentity(a, email, salt, zone2.derivation_path, "device", 6, n);
+        defer unit.deinit(a);
+        try std.testing.expectEqualStrings(&expected[n], &unit.public_key_hex);
+    }
+    // ...and the burn survived: the next unit lands past the retired index.
+    try std.testing.expectEqual(
+        @as(u64, 3),
+        try rebuilt.allocateIndex(&zone2.cert_id, "device", 6),
+    );
+}
+
+test "recovery: importing the same recipe twice is a no-op, not an error" {
+    const a = std.testing.allocator;
+    const email = "idem@fleet.example";
+    const salt = "idem-salt";
+    const root = try identity.rootIdentity(a, email, salt);
+
+    var origin = Store.initMemory(a);
+    defer origin.deinit();
+    const zi = try origin.allocateIndex(&root.cert_id, "zone", 6);
+    const zone = try identity.deriveChildIdentity(a, email, salt, "root", "zone", 6, zi);
+    defer zone.deinit(a);
+    try origin.putNode(.{ .cert_id = &zone.cert_id, .parent_cert_id = &root.cert_id, .resource_id = "zone", .domain_flag = 6, .child_index = zi, .label = "z" });
+
+    const recipe = try recovery.exportRecipe(a, &origin, &root.cert_id, email);
+    defer a.free(recipe);
+
+    var rebuilt = Store.initMemory(a);
+    defer rebuilt.deinit();
+    _ = try recovery.importRecipe(a, &rebuilt, email, salt, recipe);
+    const first = try rebuilt.highWaterMark(&root.cert_id, "zone", 6);
+    _ = try recovery.importRecipe(a, &rebuilt, email, salt, recipe);
+    try std.testing.expectEqual(first, try rebuilt.highWaterMark(&root.cert_id, "zone", 6));
+}

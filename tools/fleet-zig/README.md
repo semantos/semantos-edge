@@ -3,12 +3,13 @@
 Plexus key derivation in Zig, on [bsvz](https://github.com/b-open-io/bsvz).
 
 ```bash
-zig build test --summary all     # 40 conformance tests against the SDK's oracle
+zig build test --summary all     # 45 conformance tests against the SDK's oracle
 zig build hw                     # drive two real ESP32-C6 boards
 ```
 
-**M1–M5 of the Zig control plane, complete.** Derivation, certificate ids, the
-store, cert issuance — and the hardware proof, re-run end to end from Zig. The port
+**M1–M5 of the Zig control plane, complete, plus recovery.** Derivation,
+certificate ids, the store, cert issuance, the hardware proof re-run end to end
+from Zig — and recovery recipes in both directions. The port
 reproduces the Plexus SDK byte-for-byte, checked against the SDK's own vectors
 rather than against expectations written here. From `(rootEmail, rootSalt)` alone
 it recomputes the root certificate id and every id in the vector's counter
@@ -46,9 +47,58 @@ private keys on device" structural rather than remembered.
 | `cert.buildPayload(...)` | the 66 bytes `cm_cap_install` reads |
 | `cert.mintCell(...)` | the 1 KB cell the radio carries |
 | `cert.signCell` / `verifyCell` | raw r‖s, low-S, over a single SHA-256 |
+| `recovery.exportRecipe(...)` | paths + high-water marks, no key material |
+| `recovery.importRecipe(...)` | rebuild a fleet from a recipe and the root |
 
 `plexus-kdf-v2` and `v3` are in the vector and deliberately not ported — v1 is
 what a fleet uses.
+
+## Recovery, in both directions
+
+```bash
+bun run fleet:zig:interop     # from the repo root
+```
+
+A recipe carries derivation paths and per-slot high-water marks, never key
+material — every key is a function of the operator root, which stays out of the
+recipe by construction.
+
+The conformance suite proves this plane can **consume** what the SDK emits, by
+replaying five payloads through the SDK's real `reconstituteFromRecoveryExport`
+and matching what the rebuilt allocator hands out. The interop script proves the
+other direction, which cannot live in a Zig test because the oracle is a
+TypeScript function:
+
+```
+SDK <- Zig recovery recipe
+  ok   root certId round-trips            got 8607c26f...
+  ok   next zone index                    got 1
+  ok   next device index (issued + burned) got 4
+```
+
+That last line is the one worth reading: three units were issued and one slot was
+burned, and the SDK — reading a recipe this plane wrote — hands out 4. **A fact
+only the store knew survived the language boundary.** A plane that could only
+import would be a plane that cannot back anything up.
+
+**The counter in a recipe is not trusted.** It arrives from a service that does
+not authenticate its callers, so a value below the paths replayed beside it is a
+reachable input, not a malformed-payload hypothesis — and trusting it rewinds the
+allocator under live certificates, reproducing a live holder's key exactly. Every
+counter is floored against the payload's own paths; a triple the paths prove but
+the domains never mention gets one anyway, because a rewind by omission is the
+same rewind; and a counter *above* the paths is preserved, because that is what a
+rotation's burn leaves behind. `importRecipe` reports how many counters it had to
+floor, so a payload that would have rewound says so rather than being quietly
+corrected.
+
+**Paths are verified, not believed.** Each declares the certId it should arrive
+at; import re-derives the ancestry and refuses one that does not reproduce it, so
+a recipe cannot introduce a node the operator root would never have derived.
+
+A recipe does **not** carry labels. A rebuilt fleet knows a unit is `member:2`
+under a given zone and does not know it was called "cold-chain-01". Re-attaching
+human names wants a separate, non-cryptographic backup.
 
 ## On real hardware, from Zig
 
@@ -193,6 +243,11 @@ mutation-tested — each of these was applied and the suite caught it:
 | payload root over the used prefix, not the full region | yes |
 | cert offsets, route type, linearity, owner-id length | yes |
 | expiry written big-endian | yes — *after* a test was added |
+| recovery trusts the declared counter | yes |
+| recovery skips triples the domains omit | yes |
+| recovery takes the last sibling row, not the max | yes |
+| recovery does not verify a path re-derives | yes |
+| recovery floor off by one | yes |
 
 Three of those rows say "after a test was added", and they are the honest part of
 this table. Two store mutations and one cert mutation initially survived: `raise`-vs-`set` was

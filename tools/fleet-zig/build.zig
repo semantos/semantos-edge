@@ -52,6 +52,15 @@ pub fn build(b: *std.Build) void {
     cert_mod.addImport("cell_wire", cell_wire_mod);
     cert_mod.addImport("derive", derive_mod);
 
+    const recovery_mod = b.addModule("recovery", .{
+        .root_source_file = b.path("src/recovery.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    recovery_mod.addImport("derive", derive_mod);
+    recovery_mod.addImport("identity", identity_mod);
+    recovery_mod.addImport("store", store_mod);
+
     // Conformance against the SDK's pinned golden vector. The vector is
     // embedded rather than read at runtime so the test cannot silently pass by
     // failing to find it.
@@ -67,6 +76,7 @@ pub fn build(b: *std.Build) void {
     conformance.root_module.addImport("identity", identity_mod);
     conformance.root_module.addImport("store", store_mod);
     conformance.root_module.addImport("cert", cert_mod);
+    conformance.root_module.addImport("recovery", recovery_mod);
     conformance.root_module.addAnonymousImport("golden", .{
         .root_source_file = b.path("vectors/cross-impl-derivation.golden.json"),
     });
@@ -78,6 +88,9 @@ pub fn build(b: *std.Build) void {
     });
     conformance.root_module.addAnonymousImport("golden_cert", .{
         .root_source_file = b.path("vectors/cert.golden.json"),
+    });
+    conformance.root_module.addAnonymousImport("golden_recovery", .{
+        .root_source_file = b.path("vectors/recovery.golden.json"),
     });
     conformance.root_module.addAnonymousImport("cap_header", .{
         .root_source_file = b.path("../../components/cell-mesh/include/cell_capability.h"),
@@ -101,4 +114,19 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(hw);
     const run_hw = b.addRunArtifact(hw);
     b.step("hw", "run the hardware proof against two C6 boards").dependOn(&run_hw.step);
+
+    const exporter = b.addExecutable(.{
+        .name = "export-recipe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/export_recipe.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    exporter.root_module.addImport("identity", identity_mod);
+    exporter.root_module.addImport("store", store_mod);
+    exporter.root_module.addImport("recovery", recovery_mod);
+    b.installArtifact(exporter);
+    const run_export = b.addRunArtifact(exporter);
+    b.step("export-recipe", "print a recovery recipe on stdout").dependOn(&run_export.step);
 }

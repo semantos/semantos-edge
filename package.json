@@ -29,7 +29,8 @@
     "fleet:test": "bun test tools/fleet/",
     "fleet:anchor": "bun tools/fleet/anchor.ts",
     "fleet:hw": "bun tools/fleet/hardware.ts",
-    "fleet:zig:test": "cd tools/fleet-zig && zig build test --summary all"
+    "fleet:zig:test": "cd tools/fleet-zig && zig build test --summary all",
+    "fleet:zig:interop": "cd tools/fleet-zig && zig build export-recipe > /tmp/zig-recipe.json && node vectors/check-recipe-interop.mjs /tmp/zig-recipe.json"
   },
   "dependencies": {
     "@bsv/sdk": "^2.0.0"
