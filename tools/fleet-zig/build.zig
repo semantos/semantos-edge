@@ -85,4 +85,20 @@ pub fn build(b: *std.Build) void {
 
     const run_conformance = b.addRunArtifact(conformance);
     b.step("test", "run cross-implementation conformance").dependOn(&run_conformance.step);
+
+    // M5: drive real boards from this plane.
+    const hw = b.addExecutable(.{
+        .name = "fleet-hw",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/hardware.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    hw.root_module.addImport("derive", derive_mod);
+    hw.root_module.addImport("identity", identity_mod);
+    hw.root_module.addImport("cert", cert_mod);
+    b.installArtifact(hw);
+    const run_hw = b.addRunArtifact(hw);
+    b.step("hw", "run the hardware proof against two C6 boards").dependOn(&run_hw.step);
 }

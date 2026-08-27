@@ -79,3 +79,7 @@ byte-order mistake in the expiry field.
 
 The signature is carried to be **verified**, not compared: the two planes use
 different deterministic nonce schemes and produce different valid signatures.
+
+It also carries `hardwareParityCase` — the demo fleet the C6 boards are flashed
+for — so the Zig plane's agreement with the TypeScript one is a test rather than
+something noticed during a hardware run.

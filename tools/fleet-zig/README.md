@@ -3,10 +3,12 @@
 Plexus key derivation in Zig, on [bsvz](https://github.com/b-open-io/bsvz).
 
 ```bash
-zig build test --summary all     # 39 conformance tests against the SDK's oracle
+zig build test --summary all     # 40 conformance tests against the SDK's oracle
+zig build hw                     # drive two real ESP32-C6 boards
 ```
 
-**M1–M4 of the Zig control plane: derivation, certificate ids, the store, and cert issuance.** The port
+**M1–M5 of the Zig control plane, complete.** Derivation, certificate ids, the
+store, cert issuance — and the hardware proof, re-run end to end from Zig. The port
 reproduces the Plexus SDK byte-for-byte, checked against the SDK's own vectors
 rather than against expectations written here. From `(rootEmail, rootSalt)` alone
 it recomputes the root certificate id and every id in the vector's counter
@@ -46,8 +48,42 @@ private keys on device" structural rather than remembered.
 | `cert.signCell` / `verifyCell` | raw r‖s, low-S, over a single SHA-256 |
 
 `plexus-kdf-v2` and `v3` are in the vector and deliberately not ported — v1 is
-what a fleet uses. M5 is hardware parity: the same three verdicts on the same
-two boards, driven by this plane instead of the TypeScript one.
+what a fleet uses.
+
+## On real hardware, from Zig
+
+```bash
+zig build hw     # discovers two boards; needs USE_FLEET_ANCHOR 1 firmware
+```
+
+```
+1. Provision a unit - every byte derived by this process
+   operator anchor  0245ad80f7eb6d2222ad6741fe6aa6a9b51d5571c6945a43813cf4b71b5441e6d6
+   device path      root/zone:6:0/device:6:0
+   device pubkey    03e7b74fb9e2ce55b32e996215d4f51aa667f882a27c249adb330a6a533e3b18d5
+   channel          9fce30f7673e30ac308300a93412c760
+
+2. Inject the cert - the board must accept and install it
+   I mesh_demo: CAP cert installed: ch=9fce30f7... edge=03e7b74f...
+   ACCEPTED - echoed ch=9fce30f7... edge=03e7b74f... (matches what Zig derived)
+
+3. Flip one byte - the board must refuse it
+   W mesh_demo: RX [58:e6:c5:1a:8b:28] signature INVALID (wallet pubkey)
+   REJECTED - the tamper did not survive cm_sig_verify
+
+4. Sign with the OLD demo key - the board must refuse that too
+   W mesh_demo: RX [58:e6:c5:1a:8b:28] signature INVALID (wallet pubkey)
+   REJECTED - the boards trust the fleet root, not the key they shipped with
+```
+
+Derivation, certificate, signature, CRC framing and serial I/O all happen in that
+one process. Nothing is borrowed from the TypeScript plane except the boards.
+
+**The device key and channel are byte-identical to what the TypeScript plane
+produced** for the same fleet — and since the channel is the device certId's
+first 16 bytes, matching it also proves the canonical-JSON certId agrees. That
+parity is pinned as a test (`hardware parity: ...`), so it is checked in CI
+rather than noticed by eye during a hardware run.
 
 ## "Byte-identical" holds for the cert, not the signature
 

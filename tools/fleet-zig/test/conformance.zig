@@ -1137,3 +1137,36 @@ test "cert: a real expiry pins the field's byte order" {
     _ = try std.fmt.bufPrint(cell_hex, "{x}", .{&cell});
     try std.testing.expectEqualStrings(str(c, "certCellHex"), cell_hex);
 }
+
+test "hardware parity: the Zig plane derives what the TypeScript plane flashed" {
+    // The demo fleet the C6 boards carry an anchor for. Both planes must agree
+    // on the operator key, the paths, the device key and the channel — and the
+    // channel is the device certId's first 16 bytes, so matching it also proves
+    // the canonical-JSON certId agrees. Pinned here so parity is checked in CI
+    // rather than noticed by eye during a hardware run.
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_CERT, .{});
+    defer parsed.deinit();
+    const c = obj(parsed.value, "hardwareParityCase");
+
+    const email = str(c, "rootEmail");
+    const salt = str(c, "rootSalt");
+
+    const operator = try derive.derivePrivateKeyAtPath(email, salt, "root");
+    try std.testing.expectEqualStrings(str(c, "operatorPubKeyHex"), &(try derive.pubHex(operator)));
+
+    const zone = try identity.deriveChildIdentity(a, email, salt, "root", "zone", 6, 0);
+    defer zone.deinit(a);
+    try std.testing.expectEqualStrings(str(c, "zoneDerivationPath"), zone.derivation_path);
+
+    const unit = try identity.deriveChildIdentity(a, email, salt, zone.derivation_path, "device", 6, 0);
+    defer unit.deinit(a);
+    try std.testing.expectEqualStrings(str(c, "deviceDerivationPath"), unit.derivation_path);
+    try std.testing.expectEqualStrings(str(c, "devicePublicKeyHex"), &unit.public_key_hex);
+    try std.testing.expectEqualStrings(str(c, "deviceCertId"), &unit.cert_id);
+
+    const channel = try cert.channelIdFor(&unit.cert_id);
+    var chan_hex: [32]u8 = undefined;
+    _ = try std.fmt.bufPrint(&chan_hex, "{x}", .{&channel});
+    try std.testing.expectEqualStrings(str(c, "channelIdHex"), &chan_hex);
+}
