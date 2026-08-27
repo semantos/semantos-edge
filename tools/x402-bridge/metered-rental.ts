@@ -24,6 +24,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:chil
 import { openSync, writeSync, closeSync, readdirSync } from 'node:fs';
 import { PrivateKey } from '@bsv/sdk';
 import { mintCell, signCell, typeHash, writeU32LE, writeU64LE } from './cell-codec.js';
+import { domainForType } from './cell-domains.js';
 import { frameCell } from './serial-mesh.js';
 import { createAction, getPublicKey, p2pkhScriptHexFromPubkey, rawTxHexFromCreateAction } from './metanet.js';
 import { broadcastTxHex } from './arc.js';
@@ -70,7 +71,7 @@ function encodeClose(id: Uint8Array, finalSeq: number, finalDeviceShare: number)
 }
 
 async function inject(type: Uint8Array, payload: Uint8Array): Promise<void> {
-  const cell = mintCell(type, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(type, payload, OWNER, BigInt(Date.now()), domainForType(type));
   const sig = signCell(cell, WALLET);
   const frame = Buffer.from(frameCell(cell, sig));
   const fd = openSync(injectPort, 'w');

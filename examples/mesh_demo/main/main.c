@@ -42,6 +42,7 @@
 #include "cell_forward_v2.h"
 #include "cell_channel.h"
 #include "cell_capability.h"
+#include "cell_domains.h"
 #include "cell_meter.h"
 #include "cell_mnca.h"
 #include "semantos.h"
@@ -86,7 +87,14 @@ static const char *TAG = "mesh_demo";
 // Must stay below 0x80000000. The engine reads the expected flag as a BSV
 // script number, so bit 31 is a SIGN bit — see the encoding note in
 // components/cell-mesh/test/vectors/domainflag_vectors.h.
-#define DEVICE_DOMAIN_FLAG 0x00f10001u
+//
+// CM_DOMAIN_FLEET_DEVICE is generated from tools/fleet-zig/src/domains.zig, so
+// the firmware, the Zig control plane and the TypeScript bridge cannot drift
+// apart on this value. It is also CM_DOMAIN_MESH_RELAY — the same flag, because
+// a capability cert grants a device the right to relay, and that IS what a
+// fleet device's identity is for. Two provisioning paths, one namespace;
+// different issuers are separated by the signature anchor, not the domain.
+#define DEVICE_DOMAIN_FLAG CM_DOMAIN_FLEET_DEVICE
 
 #if USE_FLEET_ANCHOR
 // Fleet operator trust anchor, derived not invented.
@@ -844,7 +852,7 @@ static void domain_flag_selftest(void) {
     // A matching pair and a mismatching one. The mismatch is the load-bearing
     // half: an opcode that accepted everything would pass the first alone.
     const uint32_t mine  = DEVICE_DOMAIN_FLAG;
-    const uint32_t other = 0x00f10002u;   // org.member — a real, different domain
+    const uint32_t other = CM_DOMAIN_ORG_MEMBER;  // a real, different domain
 
     int err_match = 0, err_mismatch = 0;
     bool engine_match    = domain_opcode_accepts(mine, mine,  &err_match);

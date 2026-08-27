@@ -26,6 +26,7 @@
  */
 
 import readline from 'node:readline';
+import { DOMAIN } from '../domains.js';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { PrivateKey, ECDSA, BigNumber } from '@bsv/sdk';
@@ -123,7 +124,7 @@ function buildScriptedPayload(tamper: boolean): Uint8Array {
 
 function buildFrame(tamper: boolean): Buffer {
   const payload = buildScriptedPayload(tamper);
-  const cell = mintCell(SCRIPTED_TYPE, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(SCRIPTED_TYPE, payload, OWNER, BigInt(Date.now()), DOMAIN.meshScript);
   const sig = signCell(cell, WALLET); // frame sig over the final cell — valid in BOTH cases
   return Buffer.from(frameCell(cell, sig));
 }

@@ -153,6 +153,20 @@ pub fn build(b: *std.Build) void {
     exporter.root_module.addImport("store", store_mod);
     exporter.root_module.addImport("recovery", recovery_mod);
     exporter.root_module.addImport("domains", domains_mod);
+
+    const gen_domains = b.addExecutable(.{
+        .name = "gen-domains",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gen_domains.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    gen_domains.root_module.addImport("domains", domains_mod);
+    const run_gen = b.addRunArtifact(gen_domains);
+    if (b.args) |args| run_gen.addArgs(args);
+    b.step("gen-domains", "Emit cell_domains.h and domains.ts from domains.zig")
+        .dependOn(&run_gen.step);
     b.installArtifact(exporter);
     const run_export = b.addRunArtifact(exporter);
     b.step("export-recipe", "print a recovery recipe on stdout").dependOn(&run_export.step);

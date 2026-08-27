@@ -27,6 +27,7 @@
 import { PrivateKey } from '@bsv/sdk';
 import { createHmac } from 'node:crypto';
 import { mintCell, signCell, typeHash, writeU64LE, sha256 } from './cell-codec.js';
+import { DOMAIN } from '../domains.js';
 
 // ── Route type constants ─────────────────────────────────────────────────────
 /** route_type byte for cellmesh.forward.v1 relay authority. */
@@ -148,7 +149,10 @@ export function buildCapabilityCertCell(
 
   const payload     = buildCapabilityCertPayload(relayKey.pk, channelId, expiryMs, CAP_ROUTE_FWD_V1, validFromMs);
   const payloadHash = sha256(payload);  // BRC-108 cert_hash
-  const cell        = mintCell(CAPABILITY_V0_TYPE, payload, ownerId, BigInt(Date.now()));
+  // The relay rail. This cert GRANTS what forward.v1/v2 EXERCISE, and the
+  // device keys its capability table on this flag, so the forwards must
+  // declare the same one.
+  const cell        = mintCell(CAPABILITY_V0_TYPE, payload, ownerId, BigInt(Date.now()), DOMAIN.meshRelay);
   const sig         = signCell(cell, masterKey);
   return { cell, sig, payloadHash };
 }

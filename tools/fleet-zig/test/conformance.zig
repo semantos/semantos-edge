@@ -1858,3 +1858,60 @@ test "domains: a mirrored person lands in the member domain, not the zone's" {
         try s.highWaterMark(&zone.cert_id, scim.member_resource, domains.org_member),
     );
 }
+
+test "domains: the mesh rails are distinct, and relay is deliberately not" {
+    // Four rails that must never collapse into each other. If two of these
+    // ever compare equal, two different authorities have silently become one.
+    const rails = [_]u64{
+        domains.mesh_payment,
+        domains.mesh_control,
+        domains.mesh_telemetry,
+        domains.mesh_script,
+    };
+    for (rails, 0..) |a, i| {
+        for (rails, 0..) |b, j| {
+            if (i == j) continue;
+            try std.testing.expect(a != b);
+        }
+        try std.testing.expect(domains.isSovereign(a));
+        try std.testing.expect(domains.isScriptSafe(a));
+        // A rail must never land on a flag the Plexus SDK allocates.
+        for (domains.plexus_well_known) |wk| try std.testing.expect(a != wk);
+    }
+
+    // mesh_relay is the ONE deliberate alias: a capability cert grants a device
+    // the right to relay, which is what a fleet device's identity is for. If
+    // these ever diverge, cm_cap_lookup misses for every forward cell that a
+    // fleet-provisioned device was meant to relay — and the failure looks like
+    // a radio problem, not a namespace one. Asserted, not assumed.
+    try std.testing.expectEqual(domains.fleet_device, domains.mesh_relay);
+}
+
+test "domains: the allocated table covers every flag this layer declares" {
+    // The generator walks `allocated` to emit cell_domains.h and domains.ts.
+    // A flag declared as a constant but missing from the table would simply
+    // not be generated, and the C and TS sides would never learn about it.
+    const declared = [_]u64{
+        domains.zone,        domains.fleet_device, domains.org_member,
+        domains.mesh_relay,  domains.mesh_payment, domains.mesh_control,
+        domains.mesh_telemetry, domains.mesh_script,
+    };
+    for (declared) |d| {
+        var found = false;
+        for (domains.allocated) |a| {
+            if (a.value == d) found = true;
+        }
+        try std.testing.expect(found);
+    }
+    try std.testing.expectEqual(declared.len, domains.allocated.len);
+
+    // Names and values must both be unique-ish: values may alias (relay ==
+    // fleet_device by design) but two entries must never share a C name.
+    for (domains.allocated, 0..) |a, i| {
+        for (domains.allocated, 0..) |b, j| {
+            if (i == j) continue;
+            try std.testing.expect(!std.mem.eql(u8, a.c_name, b.c_name));
+            try std.testing.expect(!std.mem.eql(u8, a.ts_name, b.ts_name));
+        }
+    }
+}

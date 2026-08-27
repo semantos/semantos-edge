@@ -25,6 +25,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:chil
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { PrivateKey } from '@bsv/sdk';
 import { mintCell, signCell, typeHash, writeU16LE, writeU32LE } from './cell-codec.js';
+import { domainForType } from './cell-domains.js';
 import { frameCell } from './serial-mesh.js';
 
 // ── config ───────────────────────────────────────────────────────────
@@ -64,7 +65,7 @@ function encodeRule(triggerType: Uint8Array, blinkMs: number, quorum?: { n: numb
 
 // ── inject: sign + frame + paced write (+ retry for best-effort RF) ──
 async function inject(typeHashBytes: Uint8Array, payload: Uint8Array, label: string): Promise<void> {
-  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()), domainForType(typeHashBytes));
   const sig = signCell(cell, WALLET);
   const frame = Buffer.from(frameCell(cell, sig));
   for (let r = 0; r < 2; r++) {

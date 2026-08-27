@@ -366,13 +366,13 @@ async function injectCellSig(cell: Uint8Array, sig: Uint8Array, port = injectPor
   });
 }
 async function inject(typeHashBytes: Uint8Array, payload: Uint8Array, port = injectPort): Promise<void> {
-  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()), domainForType(typeHashBytes));
   await injectCellSig(cell, signCell(cell, WALLET), port);
 }
 
 /** Inject a cell signed with an explicit key (for capability-gated relay keys). */
 async function injectWithKey(typeHashBytes: Uint8Array, payload: Uint8Array, signingKey: PrivateKey, port = injectPort): Promise<void> {
-  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()), domainForType(typeHashBytes));
   await injectCellSig(cell, signCell(cell, signingKey), port);
 }
 
@@ -791,8 +791,10 @@ const server = Bun.serve({
         // Sign Cell A with the BRC-42 relay key; Cell B is unsigned (routing mutates)
         const relayKey    = getRelayKey(chHex);
         const relayWallet = new PrivateKey(Buffer.from(relayKey.sk).toString('hex'), 16);
-        const cellA = mintCell(TYPES.forwardV2,     payloadA, OWNER, BigInt(Date.now()));
-        const cellB = mintCell(TYPES.routingContV0, payloadB, OWNER, BigInt(Date.now()));
+        // Both on the relay rail — the same flag the capability cert carries,
+        // or cm_cap_lookup misses and the device drops them.
+        const cellA = mintCell(TYPES.forwardV2,     payloadA, OWNER, BigInt(Date.now()), domainForType(TYPES.forwardV2));
+        const cellB = mintCell(TYPES.routingContV0, payloadB, OWNER, BigInt(Date.now()), domainForType(TYPES.routingContV0));
         const sigA  = signCell(cellA, relayWallet);
         const sigB  = new Uint8Array(64);  // Cell B unsigned (zeros)
 

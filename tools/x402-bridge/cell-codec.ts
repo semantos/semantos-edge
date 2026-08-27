@@ -82,6 +82,16 @@ export function typeHash(name: string): Uint8Array {
  */
 export const DOMAIN_UNDECLARED = 0;
 
+/**
+ * The control rail, inlined rather than imported.
+ *
+ * cell-codec.ts is the lowest layer here and is imported by cell-domains.ts
+ * (for `typeHash`), so importing back would be a cycle. The value is pinned
+ * against the generated table by a test, which is the same guarantee without
+ * the cycle.
+ */
+const DOMAIN_MESH_CONTROL = 0x00f10020;
+
 export const ACTUATOR_OFFER_TYPE = typeHash('cellmesh.actuator_offer.v0');
 export const ACTUATOR_ACTIVATE_TYPE = typeHash('cellmesh.actuator_activate.v0');
 
@@ -248,7 +258,7 @@ export function buildActuatorActivate(
   payload.set(offer.offerId, off); off += 16;
   writeU32LE(payload, off, counter); off += 4;
 
-  const cell = mintCell(ACTUATOR_ACTIVATE_TYPE, payload, ownerId, timestampMs);
+  const cell = mintCell(ACTUATOR_ACTIVATE_TYPE, payload, ownerId, timestampMs, DOMAIN_MESH_CONTROL);
   const sig = signCell(cell, walletKey);
   return { payload, cell, sig };
 }

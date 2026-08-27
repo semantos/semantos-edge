@@ -27,6 +27,7 @@
  */
 
 import readline from 'node:readline';
+import { DOMAIN } from '../domains.js';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { openSync, writeSync, closeSync, existsSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { PrivateKey, Transaction, Script, P2PKH, ECDSA, BigNumber } from '@bsv/sdk';
@@ -142,7 +143,7 @@ function buildGatedSpend(f: Funding, tamper: boolean): { frame: Buffer; broadcas
   writeU64LE(payload, o, BigInt(f.value)); o += 8;          // input_value
   writeU32LE(payload, o, counter++);     o += 4;            // uniqueness
 
-  const cell = mintCell(SCRIPTED_TYPE, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(SCRIPTED_TYPE, payload, OWNER, BigInt(Date.now()), DOMAIN.meshScript);
   const sig = signCell(cell, WALLET);                      // frame auth (trusted wallet)
   const frame = Buffer.from(frameCell(cell, sig));
 

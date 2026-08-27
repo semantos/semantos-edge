@@ -24,6 +24,7 @@
  */
 
 import readline from 'node:readline';
+import { DOMAIN } from '../domains.js';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { openSync, writeSync, closeSync, readdirSync } from 'node:fs';
 import { PrivateKey, ECDSA, BigNumber } from '@bsv/sdk';
@@ -94,7 +95,7 @@ function buildActivation(tamper: boolean): Buffer {
   payload.set(offerId, o);               o += 16;
   writeU32LE(payload, o, counter++);     o += 4;
 
-  const cell = mintCell(ACTUATOR_ACTIVATE_TYPE, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(ACTUATOR_ACTIVATE_TYPE, payload, OWNER, BigInt(Date.now()), DOMAIN.meshControl);
   const sig = signCell(cell, WALLET); // operator frame-auth (covers the txid binding)
   return Buffer.from(frameCell(cell, sig));
 }
