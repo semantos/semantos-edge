@@ -24,7 +24,9 @@
     "opcode:parity": "bun tools/check-opcode-parity.ts",
     "zig:test": "cd components/cell-mesh-zig && zig build test",
     "zig:test:c-abi": "components/cell-mesh-zig/run-c-abi-tests.sh",
-    "test": "bun test"
+    "test": "bun test",
+    "fleet:demo": "bun tools/fleet/provision.ts",
+    "fleet:test": "bun test tools/fleet/"
   },
   "dependencies": {
     "@bsv/sdk": "^2.0.0"
