@@ -1,0 +1,13 @@
+.{
+    .name = .plexus_derivation_spike,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .bsvz = .{
+            .url = "git+https://github.com/b-open-io/bsvz.git#b57fc31a841e9f85e5865cbef40f587b09b93289",
+            .hash = "bsvz-0.1.0-wvsL-WxLFQDe9iof_SjQDSnsELT5o7DkswCAdKA2yUlD",
+        },
+    },
+    .paths = .{""},
+    .fingerprint = 0xcb034b05bc17ca74,
+}
