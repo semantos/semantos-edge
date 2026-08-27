@@ -22,6 +22,7 @@
 #include "cell_wire.h"
 #include "cell_frame.h"
 #include "esp_err.h"
+#include "esp_netif.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -58,9 +59,30 @@ esp_err_t cm_radio_send_cell(const uint8_t cell[CM_CELL_SIZE],
                               const uint8_t sig[CM_FRAME_SIG_SIZE],
                               uint32_t cell_id);
 
+/**
+ * Send a cell to ONE peer instead of broadcasting.
+ *
+ * This is what lets a relayed cell stay byte-identical. Broadcast routing has
+ * to carry a cursor inside the cell — which hop are we at, who is next — and
+ * mutating that cursor changes the bytes the origin signed, so the signature
+ * cannot survive a hop. Addressing at the radio layer instead means the cell
+ * is signed once and relayed unchanged: the cell IS the wire format.
+ *
+ * The peer is registered on demand; "already exists" is not an error.
+ */
+esp_err_t cm_radio_send_cell_to(const uint8_t peer_mac[6],
+                                 const uint8_t cell[CM_CELL_SIZE],
+                                 const uint8_t sig[CM_FRAME_SIG_SIZE],
+                                 uint32_t cell_id);
+
 // Read this node's WiFi STA MAC into `out_mac[6]`. Useful for stamping
 // cells with an owner_id derived from MAC at provisioning time.
 esp_err_t cm_radio_get_mac(uint8_t out_mac[6]);
+
+// Return the shared WiFi STA netif created during radio init. This lets
+// applications layer ordinary WLAN/IP behavior on top of the same STA
+// without attaching a second netif after WiFi has already started.
+esp_netif_t *cm_radio_get_sta_netif(void);
 
 #ifdef __cplusplus
 }

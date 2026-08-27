@@ -397,7 +397,12 @@ static          cm_forward_t s_pending_forward_f;
 // It must NOT be this device's own domain: stamping our own would let a device
 // in one domain launder a cell out of another.
 static uint32_t s_pending_forward_domain    = 0;
-static uint32_t s_pending_forward_v1_domain = 0;
+// The cell to relay, byte for byte as it arrived, plus its signature and the
+// one peer it goes to. Relaying the original bytes is what keeps the origin's
+// signature valid at every hop; see cm_radio_send_cell_to.
+static uint8_t  s_pending_forward_v1_cell[CM_CELL_SIZE];
+static uint8_t  s_pending_forward_v1_sig[CM_FRAME_SIG_SIZE];
+static uint8_t  s_pending_forward_v1_next[6];
 static uint32_t s_pending_fwdv2_domain      = 0;
 static volatile uint32_t  s_forward_overruns      = 0;
 static          uint32_t  s_tx_forward_counter    = 0;
@@ -409,7 +414,6 @@ static          uint32_t  s_rx_forward_counter    = 0;
 // accepted, it queues the (already-stepped) forward cell here and the
 // main loop broadcasts it. Channel state lives in s_fwd_channel.
 static volatile bool       s_pending_forward_v1   = false;
-static          cm_forward_v1_t s_pending_forward_v1_f;
 static volatile uint32_t   s_forward_v1_overruns  = 0;
 static          uint32_t   s_rx_forward_v1_counter = 0;
 
@@ -1026,14 +1030,30 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             ESP_LOGW(TAG, "RX [%s] forward.v1: decode failed", mac_str);
             return;
         }
-        // Is segments[0] addressed to me?
-        if (fv1.segments_remaining > 0 &&
-            memcmp(fv1.segments[0], s_my_mac, 6) != 0) {
-            return;  // not for me — drop silently
+        // ── Where am I on this path? ─────────────────────────────────────
+        //
+        // The cell is relayed UNCHANGED, so segments[] is the whole route as
+        // the origin signed it and no hop cursor is mutated in flight. A device
+        // finds itself by position instead of reading a counter someone else
+        // incremented — which is what lets the origin's signature verify at
+        // every hop rather than only the first.
+        uint8_t my_hop = 0xff;
+        uint8_t path_len = fv1.total_hops;
+        if (path_len > CM_FORWARD_MAX_HOPS) path_len = CM_FORWARD_MAX_HOPS;
+        for (uint8_t i = 0; i < path_len; i++) {
+            if (memcmp(fv1.segments[i], s_my_mac, 6) == 0) { my_hop = i; break; }
+        }
+        if (my_hop == 0xff) return;  // not on this route — drop silently
+
+        // Ordering. Everyone in range hears the origin's broadcast, so without
+        // this the LAST hop would accept before the first had relayed, and the
+        // path would be a suggestion. Hop 0 takes it from the origin; every
+        // later hop takes it only from its immediate predecessor, which is the
+        // device the previous hop unicast to it.
+        if (my_hop > 0 && memcmp(sender_mac, fv1.segments[my_hop - 1], 6) != 0) {
+            return;  // out of order — not from my predecessor
         }
         // ── Capability check: sig must come from a certified relay key ──
-        // hop_index before step = which commitment slot to read channel_id from.
-        uint8_t my_hop = fv1.hop_index;
         uint64_t now_cap = (uint64_t)esp_log_timestamp();
         {
             // ── F2: Capability check — strict, no fallback to master key ────────
@@ -1125,7 +1145,19 @@ static void on_radio_recv(const uint8_t sender_mac[6],
         }
         // ── Step + hop_verb (same as v0) ─────────────────────────────────
         uint8_t next_mac[6] = {0};
-        cm_forward_step_rc_t rc = cm_forward_v1_step(&fv1, next_mac);
+        // Position decides, not a carried counter. cm_forward_v1_step exists to
+        // mutate the route in place — decrement segments_remaining, bump
+        // hop_index — and that mutation is exactly what a byte-identical relay
+        // must not do. So the same decision is made from where we sit on an
+        // immutable path: someone after me, or am I the end of it?
+        cm_forward_step_rc_t rc;
+        if (my_hop + 1 < path_len) {
+            memcpy(next_mac, fv1.segments[my_hop + 1], 6);
+            rc = CM_FWD_NEXT;
+        } else {
+            memset(next_mac, 0, 6);
+            rc = CM_FWD_DELIVERED;
+        }
         // Reuse v0 hop_verb dispatch (EVAL_RULES / INSTALL_RULE identical).
         if (fv1.hop_verb == CM_HOP_VERB_EVAL_RULES) {
             cm_effect_t hop_effects[CM_RULES_MAX];
@@ -1153,21 +1185,26 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                        ? fv1.inner_payload_len : sizeof(preview) - 1;
             memcpy(preview, fv1.inner_payload, n);
             ESP_LOGI(TAG, "*** FORWARD.V1 DELIVERED *** from=[%s] hop=%u verb=%u "
-                     "ds=%u inner='%s'", mac_str, (unsigned)fv1.hop_index,
+                     "ds=%u inner='%s'", mac_str, (unsigned)my_hop,
                      (unsigned)fv1.hop_verb,
                      (unsigned)s_fwd_channel.device_share, preview);
             s_blink_until_us = esp_timer_get_time()
                              + (uint64_t)FORWARD_DELIVERED_BLINK_MS * 1000ULL;
         } else if (rc == CM_FWD_NEXT) {
             ESP_LOGI(TAG, "RX [%s] forward.v1 → relay; next=%02x:%02x:%02x:%02x:%02x:%02x "
-                     "remaining=%u verb=%u ds=%u",
+                     "hop=%u/%u verb=%u ds=%u",
                      mac_str, next_mac[0], next_mac[1], next_mac[2],
                      next_mac[3], next_mac[4], next_mac[5],
-                     (unsigned)fv1.segments_remaining, (unsigned)fv1.hop_verb,
+                     (unsigned)my_hop, (unsigned)path_len, (unsigned)fv1.hop_verb,
                      (unsigned)s_fwd_channel.device_share);
             if (!s_pending_forward_v1) {
-                s_pending_forward_v1_f      = fv1;
-                s_pending_forward_v1_domain = cm_flags(cell);
+                // Stash the cell VERBATIM. Relaying the exact bytes we
+                // received is the whole point: the origin's signature still
+                // covers them, so the next hop can verify it rather than
+                // trusting the cert alone.
+                memcpy(s_pending_forward_v1_cell, cell, CM_CELL_SIZE);
+                memcpy(s_pending_forward_v1_sig, sig, CM_FRAME_SIG_SIZE);
+                memcpy(s_pending_forward_v1_next, fv1.segments[my_hop + 1], 6);
                 s_pending_forward_v1   = true;
             } else {
                 s_forward_v1_overruns++;
@@ -2277,50 +2314,32 @@ static void drain_pending_forward(void) {
     }
 }
 
-// ── forward.v1 relay builder + drain ────────────────────────────────
-static int build_forward_v1_cell(const cm_forward_v1_t *fv1,
-                                  uint8_t out_cell[CM_CELL_SIZE],
-                                  uint8_t out_sig[CM_FRAME_SIG_SIZE],
-                                  uint32_t domain_flag) {
-    cm_cell_init(out_cell);
-    cm_set_flags(out_cell, domain_flag);   // carry the relayed cell's domain
-    cm_set_linearity(out_cell, CM_LINEARITY_AFFINE);
-    memcpy(cm_type_hash_mut(out_cell), s_forward_v1_type_hash, 32);
-    memcpy(cm_owner_id_mut(out_cell), s_my_mac, 6);
-    memset(cm_owner_id_mut(out_cell) + 6, 0, 10);
-    cm_set_timestamp_ms(out_cell, (uint64_t)esp_log_timestamp());
-
-    uint8_t payload[CM_PAYLOAD_SIZE];
-    size_t  used = 0;
-    if (cm_forward_v1_encode(fv1, payload, &used) != 0) return -1;
-    if (used < CM_PAYLOAD_SIZE) memset(payload + used, 0, CM_PAYLOAD_SIZE - used);
-
-    memcpy(cm_payload_mut(out_cell), payload, CM_PAYLOAD_SIZE);
-    cm_set_payload_total(out_cell, (uint32_t)used);
-
-    uint8_t pr[32];
-    mbedtls_sha256(cm_payload(out_cell), CM_PAYLOAD_SIZE, pr, 0);
-    memcpy(cm_domain_payload_root_mut(out_cell), pr, 32);
-
-    memset(out_sig, 0, CM_FRAME_SIG_SIZE);  // unsigned (segments mutate per hop)
-    return 0;
-}
+// ── forward.v1 relay drain ──────────────────────────────────────────
+//
+// There is no builder here any more. Rebuilding a cell to relay it is what
+// broke hop 1: the rebuild mutated segments and hop_index, which are inside
+// the 1024 bytes the origin signed, so the signature could not survive and the
+// relay had to emit a zero sig that the next hop then refused. The cell is the
+// wire format — so it is relayed as it arrived, and the routing cursor lives
+// in the radio's destination address instead of inside the signed bytes.
 
 static void drain_pending_forward_v1(void) {
     if (!s_pending_forward_v1) return;
-    cm_forward_v1_t fv1 = s_pending_forward_v1_f;
     s_pending_forward_v1 = false;
 
-    uint8_t cell[CM_CELL_SIZE], sig[CM_FRAME_SIG_SIZE];
-    if (build_forward_v1_cell(&fv1, cell, sig, s_pending_forward_v1_domain) != 0) {
-        ESP_LOGW(TAG, "forward.v1 relay: build failed");
-        return;
-    }
+    // No rebuild. The cell goes out exactly as it came in — same 1024 bytes,
+    // same signature — unicast to the one device that is next on the path.
+    // Nothing here can invalidate what the origin signed, because nothing here
+    // touches it.
     uint32_t cell_id = (uint32_t)esp_random();
-    if (cm_radio_send_cell(cell, sig, cell_id) == 0) {
-        ESP_LOGI(TAG, "TX *** FORWARD.V1 RELAY *** hop_index=%u remaining=%u "
-                 "cell_id=0x%08x ds=%u",
-                 (unsigned)fv1.hop_index, (unsigned)fv1.segments_remaining,
+    if (cm_radio_send_cell_to(s_pending_forward_v1_next,
+                              s_pending_forward_v1_cell,
+                              s_pending_forward_v1_sig, cell_id) == 0) {
+        ESP_LOGI(TAG, "TX *** FORWARD.V1 RELAY *** -> %02x:%02x:%02x:%02x:%02x:%02x "
+                 "cell_id=0x%08x ds=%u (verbatim, sig intact)",
+                 s_pending_forward_v1_next[0], s_pending_forward_v1_next[1],
+                 s_pending_forward_v1_next[2], s_pending_forward_v1_next[3],
+                 s_pending_forward_v1_next[4], s_pending_forward_v1_next[5],
                  (unsigned)cell_id, (unsigned)s_fwd_channel.device_share);
     }
 }
