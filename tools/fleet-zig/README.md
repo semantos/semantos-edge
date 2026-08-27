@@ -3,12 +3,14 @@
 Plexus key derivation in Zig, on [bsvz](https://github.com/b-open-io/bsvz).
 
 ```bash
-zig build test --summary all     # 12 conformance tests against the SDK's oracle
+zig build test --summary all     # 24 conformance tests against the SDK's oracle
 ```
 
-**M1 of the Zig control plane: derivation conformance.** The port reproduces the
-Plexus SDK's derivation byte-for-byte, checked against the SDK's own pinned
-golden vector rather than against expectations written here.
+**M1–M2 of the Zig control plane: derivation and certificate ids.** The port
+reproduces the Plexus SDK byte-for-byte, checked against the SDK's own vectors
+rather than against expectations written here. From `(rootEmail, rootSalt)` alone
+it recomputes the root certificate id and every id in the vector's counter
+sequence.
 
 ## Why Zig, and why here
 
@@ -31,9 +33,26 @@ private keys on device" structural rather than remembered.
 | `derivePrivateKeyAtPath(email, salt, path)` | walks `root/inbox:2:0/sub:3:2` |
 | `encodeDomainFlag(flag)` | `0x1fe02` — HEX, lowercase, unpadded, for cert fields |
 | `ChildCounters` | monotonic index per `(parentCertId, resourceId, domainFlag)` |
+| `canonicalJson(preimage)` | the exact bytes `computeCertId` hashes |
+| `computeCertId(preimage)` | `sha256hex(canonicalJson(...))` |
+| `rootIdentity(email, salt)` | the root's pubkey, serialNumber and certId |
+| `deriveChildIdentity(...)` | a child's key, path, serialNumber and certId |
 
 `plexus-kdf-v2` and `v3` are in the vector and deliberately not ported — v1 is
-what a fleet uses. Rotation, the fleet store, cert encoding and signing are M3–M4.
+what a fleet uses. Rotation, the fleet store, the 66-byte cert encoding and
+signing are M3–M4.
+
+## Two shapes, and the ways they fork silently
+
+A certificate preimage has exactly two shapes. A root is **self-certified**
+(subject == certifier) with `fields = {email}`; a derived node is certified by
+its **immediate parent** — at depth 2 the certifier is the depth-1 child, not the
+root. Certifying against the root produces a valid-looking id that no other
+implementation agrees with, and every descendant inherits the fork.
+
+The same certificate carries the domain flag **twice, in two encodings**: the
+invoice number uses DECIMAL (`inbox:130562:7`) while `fields.domainFlag` uses
+unpadded lowercase HEX (`0x1fe02`). Both are pinned by tests.
 
 ## The confusion this port exists to avoid
 
@@ -57,18 +76,56 @@ stays enforced rather than remembered.
 Conformance suites are easy to write so they cannot fail. This one was
 mutation-tested — each of these was applied and the suite caught it:
 
-| mutation | caught by |
+| mutation | caught |
 |---|---|
-| invoice separator `:` → `-` | 2 tests |
-| PBKDF2 iterations 100,000 → 99,999 | 4 tests |
-| counter keyed on parent alone | 2 tests, "expected 0, found 2" |
+| invoice separator `:` → `-` | yes |
+| PBKDF2 iterations 100,000 → 99,999 | yes |
+| counter keyed on parent alone | yes — "expected 0, found 2" |
+| certifier = child instead of parent | yes |
+| serialNumber template `child:` → `derived:` | yes |
+| `fields.domainFlag` decimal instead of hex | yes |
+| sort keys by UTF-8 bytes instead of UTF-16 | yes |
+| `0x0B` → `\v` instead of `\u000b` | yes |
+| uppercase hex in `\u00XX` | yes |
+| escape `/`, or escape DEL, or `\u`-escape non-ASCII | yes |
 
-That last one is why the vector carries `wrongIfKeyedOnParentAlone`. Keyed on the
-parent alone, a five-call sequence yields `0,1,2,3,4`; keyed correctly it yields
-`0,1,0,0,2`. Both look like working code.
+**The first run of that table is why the escaping vector exists.** Against the
+SDK's derivation vector alone, four of those escaping mutations passed
+undetected — because its three certId cases contain no quote, no backslash, no
+control character, no non-ASCII and no slash. Every value is hex, an email, or a
+dotted type name. An encoder can pass the whole vector and still be wrong for any
+`resourceId` a human typed, which is the one field a fleet lets them name.
 
-Every assertion reads its expected value from the vector, so a drifting port
-fails rather than a drifting test passing.
+The counter row is why the SDK's vector carries `wrongIfKeyedOnParentAlone`.
+Keyed on the parent alone, a five-call sequence yields `0,1,2,3,4`; keyed
+correctly it yields `0,1,0,0,2`. Both look like working code.
+
+So `vectors/gen-escaping-vector.mjs` generates 49 escaping cases and 5 sort cases
+**from the SDK's own `canonicalJson`** — expected values captured from the oracle,
+not written from a reading of the ECMAScript spec. Two of the 49 are marked
+unrepresentable and skipped: a lone surrogate has no well-formed UTF-8 encoding,
+so a Zig `[]const u8` cannot carry one in, and the divergence is unreachable
+rather than merely untested.
+
+Every assertion reads its expected value from a vector, so a drifting port fails
+rather than a drifting test passing. Several tests guard the guards — asserting
+the vectors still reach a colon, a control character, non-ASCII, and a
+byte-vs-UTF-16 sort disagreement, so coverage cannot quietly evaporate.
+
+## The sort is UTF-16, not bytes
+
+The SDK sorts `fields` keys with JS `<`, which is **UTF-16 code-unit order**.
+Sorting by UTF-8 bytes — the obvious thing in Zig, and what this port did at
+first — disagrees for every pair of an astral character against one in
+U+E000..U+FFFF: an emoji leads with a surrogate in `0xD800..0xDBFF` and sorts
+FIRST in UTF-16, but leads with byte `0xF0` and sorts LAST by bytes. Different
+key order, different canonical JSON, different certId, for two perfectly valid
+keys.
+
+Unreachable through this port's own callers, whose field keys are fixed ASCII.
+Implemented correctly anyway, because `canonicalJson` is public here exactly as
+it is in the SDK, and "our callers happen not to do that" is not a property the
+type system enforces.
 
 ## Known behaviour that is preserved, not fixed
 

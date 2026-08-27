@@ -285,3 +285,366 @@ test "ChildCounters: slots are independent and monotonic" {
     try std.testing.expectEqual(@as(u64, 0), try c.next("q", "member", 6)); // other parent
     try std.testing.expectEqual(@as(u64, 2), try c.next("p", "member", 6));
 }
+
+// ── certId ───────────────────────────────────────────────────────────────────
+
+const certid = @import("certid");
+
+/// Build a Preimage from a vector case's JSON, preserving its (possibly
+/// scrambled) field order so the encoder's own sort is what is under test.
+fn preimageFrom(allocator: std.mem.Allocator, c: std.json.Value) !struct {
+    p: certid.Preimage,
+    fields: []certid.Field,
+} {
+    const f = obj(c, "fields").object;
+    var list = try allocator.alloc(certid.Field, f.count());
+    var it = f.iterator();
+    var i: usize = 0;
+    while (it.next()) |e| : (i += 1) {
+        list[i] = .{ .key = e.key_ptr.*, .value = e.value_ptr.*.string };
+    }
+    return .{
+        .p = .{
+            .subject_public_key = str(c, "subjectPublicKey"),
+            .certifier_public_key = str(c, "certifierPublicKey"),
+            .type_name = str(c, "type"),
+            .serial_number = str(c, "serialNumber"),
+            .fields = list,
+        },
+        .fields = list,
+    };
+}
+
+test "certIds: canonical JSON matches the oracle BYTE-FOR-BYTE, not just the hash" {
+    const a = std.testing.allocator;
+    var v = try Vector.load(a);
+    defer v.deinit();
+
+    const cases = arr(v.root(), "certIds");
+    try std.testing.expect(cases.len >= 3);
+    for (cases) |c| {
+        const built = try preimageFrom(a, obj(c, "preimage"));
+        defer a.free(built.fields);
+
+        const json = try certid.canonicalJson(a, built.p);
+        defer a.free(json);
+        // The intermediate string is asserted first. A hash-only check passes on
+        // an encoder that is accidentally right here and wrong in general.
+        try std.testing.expectEqualStrings(str(c, "canonicalJson"), json);
+        try std.testing.expectEqualStrings(str(c, "certId"), &certid.sha256Hex(json));
+    }
+}
+
+test "certIds: computeCertId end to end" {
+    const a = std.testing.allocator;
+    var v = try Vector.load(a);
+    defer v.deinit();
+
+    for (arr(v.root(), "certIds")) |c| {
+        const built = try preimageFrom(a, obj(c, "preimage"));
+        defer a.free(built.fields);
+        const id = try certid.computeCertId(a, built.p);
+        try std.testing.expectEqualStrings(str(c, "certId"), &id);
+    }
+}
+
+test "certIds: scrambled input key order yields the same id" {
+    const a = std.testing.allocator;
+    var v = try Vector.load(a);
+    defer v.deinit();
+
+    // The vector carries a case whose preimage keys are deliberately out of
+    // order. It must land on the same id as the ordered one — that property is
+    // what lets two implementations agree without agreeing on map iteration.
+    const cases = arr(v.root(), "certIds");
+    var ordered: ?[]const u8 = null;
+    var scrambled: ?[]const u8 = null;
+    for (cases) |c| {
+        const label = str(c, "label");
+        if (std.mem.eql(u8, label, "derived-child")) ordered = str(c, "certId");
+        if (std.mem.indexOf(u8, label, "scrambled") != null) scrambled = str(c, "certId");
+    }
+    try std.testing.expect(ordered != null and scrambled != null);
+    try std.testing.expectEqualStrings(ordered.?, scrambled.?);
+}
+
+test "certId: root and derived carry different field sets" {
+    const a = std.testing.allocator;
+    var v = try Vector.load(a);
+    defer v.deinit();
+
+    // Guards the shape assumption: `fields` is a variable map, not a fixed
+    // struct. A port that hardcoded the derived triple would pass two of three
+    // vector cases and fail every root.
+    for (arr(v.root(), "certIds")) |c| {
+        const pre = obj(c, "preimage");
+        const f = obj(pre, "fields").object;
+        if (std.mem.eql(u8, str(pre, "type"), certid.type_root)) {
+            try std.testing.expect(f.contains("email"));
+        } else {
+            try std.testing.expectEqualStrings(certid.type_derived, str(pre, "type"));
+            try std.testing.expect(f.contains("resourceId"));
+            try std.testing.expect(f.contains("domainFlag"));
+            try std.testing.expect(f.contains("childIndex"));
+        }
+    }
+}
+
+test "certId: duplicate field keys are refused rather than silently resolved" {
+    const a = std.testing.allocator;
+    const dup = [_]certid.Field{
+        .{ .key = "resourceId", .value = "inbox" },
+        .{ .key = "resourceId", .value = "archive" },
+    };
+    try std.testing.expectError(certid.Error.DuplicateFieldKey, certid.canonicalJson(a, .{
+        .subject_public_key = "02aa",
+        .certifier_public_key = "02bb",
+        .type_name = certid.type_derived,
+        .serial_number = "00",
+        .fields = &dup,
+    }));
+}
+
+// ── string escaping ──────────────────────────────────────────────────────────
+//
+// The derivation vector reaches none of this: its certId values are hex, an
+// email and a dotted type name — no quote, no backslash, no control character,
+// no non-ASCII, no slash. An encoder can pass every case in it and still be
+// wrong for any resourceId a human typed, which is the one field a fleet lets
+// them name. These cases are generated from the SDK's own canonicalJson by
+// vectors/gen-escaping-vector.mjs.
+
+const GOLDEN_ESCAPING = @embedFile("golden_escaping");
+
+fn hexToBytes(allocator: std.mem.Allocator, hex: []const u8) ![]u8 {
+    const out = try allocator.alloc(u8, hex.len / 2);
+    errdefer allocator.free(out);
+    _ = try std.fmt.hexToBytes(out, hex);
+    return out;
+}
+
+test "escaping: every generated case matches the oracle, as a value and as a key" {
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_ESCAPING, .{});
+    defer parsed.deinit();
+
+    const base = obj(parsed.value, "baseline");
+    const subject = str(base, "subjectPublicKey");
+    const certifier = str(base, "certifierPublicKey");
+    const type_name = str(base, "type");
+    const serial = str(base, "serialNumber");
+
+    const cases = arr(parsed.value, "cases");
+    try std.testing.expect(cases.len >= 40);
+
+    var checked: usize = 0;
+    var skipped: usize = 0;
+    for (cases) |c| {
+        // A lone surrogate has no well-formed UTF-8 encoding, so a Zig
+        // []const u8 cannot carry one in. The divergence is unreachable from
+        // this port rather than merely untested — skip, and count the skips so
+        // a vector that silently became all-skips would show it.
+        if (!obj(c, "representableInUtf8").bool) {
+            skipped += 1;
+            continue;
+        }
+        const raw = try hexToBytes(a, str(c, "inputUtf8Hex"));
+        defer a.free(raw);
+
+        const as_value = [_]certid.Field{.{ .key = "resourceId", .value = raw }};
+        const got_value = try certid.canonicalJson(a, .{
+            .subject_public_key = subject,
+            .certifier_public_key = certifier,
+            .type_name = type_name,
+            .serial_number = serial,
+            .fields = &as_value,
+        });
+        defer a.free(got_value);
+        try std.testing.expectEqualStrings(str(c, "canonicalAsValue"), got_value);
+
+        const as_key = [_]certid.Field{.{ .key = raw, .value = "v" }};
+        const got_key = try certid.canonicalJson(a, .{
+            .subject_public_key = subject,
+            .certifier_public_key = certifier,
+            .type_name = type_name,
+            .serial_number = serial,
+            .fields = &as_key,
+        });
+        defer a.free(got_key);
+        try std.testing.expectEqualStrings(str(c, "canonicalAsKey"), got_key);
+        checked += 1;
+    }
+    try std.testing.expect(checked >= 40);
+    try std.testing.expectEqual(@as(usize, 2), skipped); // the two lone surrogates
+}
+
+test "escaping: the vector actually reaches the characters that matter" {
+    // Guards the guard. If the generator ever stops emitting these, the suite
+    // would keep passing while covering nothing — the failure mode this whole
+    // section exists to close.
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_ESCAPING, .{});
+    defer parsed.deinit();
+
+    var saw_quote = false;
+    var saw_backslash = false;
+    var saw_slash = false;
+    var saw_control = false;
+    var saw_non_ascii = false;
+    for (arr(parsed.value, "cases")) |c| {
+        const raw = try hexToBytes(a, str(c, "inputUtf8Hex"));
+        defer a.free(raw);
+        for (raw) |b| {
+            if (b == '"') saw_quote = true;
+            if (b == '\\') saw_backslash = true;
+            if (b == '/') saw_slash = true;
+            if (b < 0x20) saw_control = true;
+            if (b >= 0x80) saw_non_ascii = true;
+        }
+    }
+    try std.testing.expect(saw_quote);
+    try std.testing.expect(saw_backslash);
+    try std.testing.expect(saw_slash);
+    try std.testing.expect(saw_control);
+    try std.testing.expect(saw_non_ascii);
+}
+
+test "escaping: fields keys sort in UTF-16 code-unit order, not UTF-8 byte order" {
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_ESCAPING, .{});
+    defer parsed.deinit();
+
+    const base = obj(parsed.value, "baseline");
+    const cases = arr(parsed.value, "sortCases");
+    try std.testing.expect(cases.len >= 5);
+
+    for (cases) |c| {
+        const keys_hex = obj(c, "keysUtf8Hex").array.items;
+        var fields = try a.alloc(certid.Field, keys_hex.len);
+        defer {
+            for (fields) |f| a.free(@constCast(f.key));
+            a.free(fields);
+        }
+        for (keys_hex, 0..) |kh, i| {
+            fields[i] = .{ .key = try hexToBytes(a, kh.string), .value = "v" };
+        }
+
+        const got = try certid.canonicalJson(a, .{
+            .subject_public_key = str(base, "subjectPublicKey"),
+            .certifier_public_key = str(base, "certifierPublicKey"),
+            .type_name = str(base, "type"),
+            .serial_number = str(base, "serialNumber"),
+            .fields = fields,
+        });
+        defer a.free(got);
+        try std.testing.expectEqualStrings(str(c, "canonical"), got);
+    }
+}
+
+test "escaping: the sort cases actually contain a byte-vs-UTF16 disagreement" {
+    // Guards the guard again. An emoji (U+1F600, UTF-8 f0...) against a
+    // private-use char (U+E000, UTF-8 ee...) is the canonical disagreement: the
+    // emoji sorts FIRST in UTF-16 and LAST by bytes. If no case carries such a
+    // pair, this section proves nothing.
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_ESCAPING, .{});
+    defer parsed.deinit();
+
+    var found = false;
+    for (arr(parsed.value, "sortCases")) |c| {
+        var has_astral = false;
+        var has_high_bmp = false;
+        for (obj(c, "keysUtf8Hex").array.items) |kh| {
+            const raw = try hexToBytes(a, kh.string);
+            defer a.free(raw);
+            if (raw.len > 0 and raw[0] == 0xF0) has_astral = true;
+            if (raw.len > 0 and (raw[0] == 0xEE or raw[0] == 0xEF)) has_high_bmp = true;
+        }
+        if (has_astral and has_high_bmp) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+// ── end to end ───────────────────────────────────────────────────────────────
+
+const identity = @import("identity");
+
+test "end to end: the root certId is computable from (email, salt) alone" {
+    const a = std.testing.allocator;
+    var v = try Vector.load(a);
+    defer v.deinit();
+
+    const universe = obj(v.root(), "universe");
+    const root = try identity.rootIdentity(a, str(universe, "rootEmail"), str(universe, "rootSalt"));
+
+    // The vector's childCounterSequence names the root it was replayed against.
+    const seq = obj(v.root(), "childCounterSequence");
+    try std.testing.expectEqualStrings(str(seq, "rootCertId"), &root.cert_id);
+
+    // And the certIds array carries the same root as a labelled case, with its
+    // serialNumber — so both halves of the construction are pinned, not just
+    // the id they happen to produce together.
+    for (arr(v.root(), "certIds")) |c| {
+        const pre = obj(c, "preimage");
+        if (!std.mem.eql(u8, str(pre, "type"), certid.type_root)) continue;
+        try std.testing.expectEqualStrings(str(pre, "serialNumber"), &root.serial_number);
+        try std.testing.expectEqualStrings(str(pre, "subjectPublicKey"), &root.public_key_hex);
+        try std.testing.expectEqualStrings(str(c, "certId"), &root.cert_id);
+    }
+}
+
+test "end to end: every childCounterSequence step's certId is recomputed, not read" {
+    const a = std.testing.allocator;
+    var v = try Vector.load(a);
+    defer v.deinit();
+
+    const universe = obj(v.root(), "universe");
+    const email = str(universe, "rootEmail");
+    const salt = str(universe, "rootSalt");
+
+    const seq = obj(v.root(), "childCounterSequence");
+    const root_cert_id = str(seq, "rootCertId");
+    const steps = seq.object.get("steps").?.array.items;
+
+    var counters = derive.ChildCounters.init(a);
+    defer counters.deinit();
+
+    for (steps) |s| {
+        const resource_id = str(s, "resourceId");
+        const flag: u64 = @intCast(int(s, "domainFlag"));
+        // Index comes from the allocator, everything else from derivation. The
+        // only thing read from the vector is what we compare against.
+        const index = try counters.next(root_cert_id, resource_id, flag);
+
+        const child = try identity.deriveChildIdentity(a, email, salt, "root", resource_id, flag, index);
+        defer child.deinit(a);
+
+        try std.testing.expectEqualStrings(str(s, "invoiceNumber"), child.invoice_number);
+        try std.testing.expectEqualStrings(str(s, "derivationPath"), child.derivation_path);
+        try std.testing.expectEqualStrings(str(s, "publicKey"), &child.public_key_hex);
+        try std.testing.expectEqualStrings(str(s, "certId"), &child.cert_id);
+    }
+}
+
+test "end to end: a grandchild is certified by its PARENT, not by the root" {
+    const a = std.testing.allocator;
+    var v = try Vector.load(a);
+    defer v.deinit();
+
+    // The vector's deepest path is root/inbox:2:0/sub:3:2. Building it proves
+    // the certifier is the immediate parent — certifying against the root
+    // instead produces a valid-looking id that no other implementation agrees
+    // with, and every descendant inherits the fork.
+    const universe = obj(v.root(), "universe");
+    const email = str(universe, "rootEmail");
+    const salt = str(universe, "rootSalt");
+
+    const child = try identity.deriveChildIdentity(a, email, salt, "root/inbox:2:0", "sub", 3, 2);
+    defer child.deinit(a);
+    try std.testing.expectEqualStrings("root/inbox:2:0/sub:3:2", child.derivation_path);
+
+    for (arr(v.root(), "derivationPaths")) |p| {
+        if (!std.mem.eql(u8, str(p, "path"), "root/inbox:2:0/sub:3:2")) continue;
+        try std.testing.expectEqualStrings(str(p, "pubHex"), &child.public_key_hex);
+    }
+}
