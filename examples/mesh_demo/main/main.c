@@ -383,7 +383,9 @@ static          uint32_t s_tx_emit_counter    = 0;
 //
 // Single producer (receive callback), single consumer (main loop).
 static volatile bool      s_pending_forward       = false;
-static          cm_forward_t s_pending_forward_f;
+static uint8_t  s_pending_forward_cell[CM_CELL_SIZE];
+static uint8_t  s_pending_forward_sig[CM_FRAME_SIG_SIZE];
+static uint8_t  s_pending_forward_next[6];
 
 // The domain flag of the cell currently queued for relay.
 //
@@ -396,14 +398,12 @@ static          cm_forward_t s_pending_forward_f;
 //
 // It must NOT be this device's own domain: stamping our own would let a device
 // in one domain launder a cell out of another.
-static uint32_t s_pending_forward_domain    = 0;
 // The cell to relay, byte for byte as it arrived, plus its signature and the
 // one peer it goes to. Relaying the original bytes is what keeps the origin's
 // signature valid at every hop; see cm_radio_send_cell_to.
 static uint8_t  s_pending_forward_v1_cell[CM_CELL_SIZE];
 static uint8_t  s_pending_forward_v1_sig[CM_FRAME_SIG_SIZE];
 static uint8_t  s_pending_forward_v1_next[6];
-static uint32_t s_pending_fwdv2_domain      = 0;
 static volatile uint32_t  s_forward_overruns      = 0;
 static          uint32_t  s_tx_forward_counter    = 0;
 static          uint32_t  s_rx_forward_counter    = 0;
@@ -465,8 +465,12 @@ static volatile bool         s_pending_forward_v2 = false;
 static bool                  s_pending_fwdv2_cell_a_sent = false; // Cell A' sent once per relay — skip on retries
 static uint8_t               s_pending_fwdv2_retry_skip  = 0;     // ticks to skip before retry
 static uint8_t               s_fwdv2_cell_b_sends_left   = 0;     // redundant Cell B sends remaining
-static cm_forward_v2_t       s_pending_fwdv2_a;
-static cm_routing_cont_t     s_pending_fwdv2_b;
+// Both cells, byte for byte as they arrived, plus the one peer they go to.
+static uint8_t  s_pending_fwdv2_cell_a[CM_CELL_SIZE];
+static uint8_t  s_pending_fwdv2_sig_a[CM_FRAME_SIG_SIZE];
+static uint8_t  s_pending_fwdv2_cell_b[CM_CELL_SIZE];
+static uint8_t  s_pending_fwdv2_sig_b[CM_FRAME_SIG_SIZE];
+static uint8_t  s_pending_fwdv2_next[6];
 static volatile uint32_t     s_forward_v2_overruns = 0;
 static          uint32_t     s_rx_forward_v2_counter = 0;
 
@@ -935,15 +939,30 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             ESP_LOGW(TAG, "RX [%s] forward: decode failed", mac_str);
             return;
         }
-        // Is segments[0] me? If not — drop silently (ESP-NOW is broadcast;
-        // peers see every other peer's cells and just ignore ones not
-        // addressed to them).
-        if (fwd.segments_remaining > 0 &&
-            memcmp(fwd.segments[0], s_my_mac, 6) != 0) {
+        // ── Where am I on this path? ─────────────────────────────────────
+        // Same shape as forward.v1: the cell is relayed unchanged, so
+        // segments[] is the whole route and a device finds itself by position
+        // rather than reading a cursor a previous hop incremented.
+        uint8_t my_hop = 0xff;
+        uint8_t path_len = fwd.total_hops;
+        if (path_len > CM_FORWARD_MAX_HOPS) path_len = CM_FORWARD_MAX_HOPS;
+        for (uint8_t i = 0; i < path_len; i++) {
+            if (memcmp(fwd.segments[i], s_my_mac, 6) == 0) { my_hop = i; break; }
+        }
+        if (my_hop == 0xff) return;  // not on this route — drop silently
+        // Ordering: everyone hears the origin's broadcast, so a later hop must
+        // take the cell from its predecessor, not from the origin.
+        if (my_hop > 0 && memcmp(sender_mac, fwd.segments[my_hop - 1], 6) != 0) {
             return;
         }
         uint8_t next_mac[6] = {0};
-        cm_forward_step_rc_t rc = cm_forward_step(&fwd, next_mac);
+        cm_forward_step_rc_t rc;
+        if (my_hop + 1 < path_len) {
+            memcpy(next_mac, fwd.segments[my_hop + 1], 6);
+            rc = CM_FWD_NEXT;
+        } else {
+            rc = CM_FWD_DELIVERED;
+        }
 
         // ── Apply hop_verb side-effect (relay hops AND destination) ──────
         // hop_verb is safe to dispatch here (WiFi task context) because:
@@ -964,7 +983,7 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                                      + (uint64_t)hop_effects[i].as.blink.duration_ms * 1000ULL;
                     ESP_LOGI(TAG, "HOP_VERB EVAL_RULES: blink %ums (hop %u)",
                              (unsigned)hop_effects[i].as.blink.duration_ms,
-                             (unsigned)fwd.hop_index);
+                             (unsigned)my_hop);
                 }
             }
         } else if (fwd.hop_verb == CM_HOP_VERB_INSTALL_RULE) {
@@ -972,7 +991,7 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                 if (!s_pending_fwd_rule) {
                     memcpy(s_pending_fwd_rule_bytes, fwd.inner_payload, CM_RULE_ENCODED_SIZE);
                     s_pending_fwd_rule = true;
-                    ESP_LOGI(TAG, "HOP_VERB INSTALL_RULE: queued (hop %u)", (unsigned)fwd.hop_index);
+                    ESP_LOGI(TAG, "HOP_VERB INSTALL_RULE: queued (hop %u)", (unsigned)my_hop);
                 } else {
                     ESP_LOGW(TAG, "HOP_VERB INSTALL_RULE: mailbox full, dropped");
                 }
@@ -988,20 +1007,22 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             size_t n = fwd.inner_payload_len < sizeof(preview) - 1
                        ? fwd.inner_payload_len : sizeof(preview) - 1;
             memcpy(preview, fwd.inner_payload, n);
-            ESP_LOGI(TAG, "*** FORWARD DELIVERED *** from=[%s] hop_index=%u verb=%u inner='%s'",
-                     mac_str, (unsigned)fwd.hop_index, (unsigned)fwd.hop_verb, preview);
+            ESP_LOGI(TAG, "*** FORWARD DELIVERED *** from=[%s] hop=%u verb=%u inner='%s'",
+                     mac_str, (unsigned)my_hop, (unsigned)fwd.hop_verb, preview);
             // Visual: 800ms blink (in addition to any verb-driven blink above).
             s_blink_until_us = esp_timer_get_time()
                              + (uint64_t)FORWARD_DELIVERED_BLINK_MS * 1000ULL;
         } else if (rc == CM_FWD_NEXT) {
-            ESP_LOGI(TAG, "RX [%s] forward → relay; next=%02x:%02x:%02x:%02x:%02x:%02x remaining=%u verb=%u",
+            ESP_LOGI(TAG, "RX [%s] forward → relay; next=%02x:%02x:%02x:%02x:%02x:%02x hop=%u/%u verb=%u",
                      mac_str,
                      next_mac[0], next_mac[1], next_mac[2],
                      next_mac[3], next_mac[4], next_mac[5],
-                     (unsigned)fwd.segments_remaining, (unsigned)fwd.hop_verb);
+                     (unsigned)my_hop, (unsigned)path_len, (unsigned)fwd.hop_verb);
             if (!s_pending_forward) {
-                s_pending_forward_f      = fwd;
-                s_pending_forward_domain = cm_flags(cell);
+                // Verbatim: the exact bytes that arrived, to the one next hop.
+                memcpy(s_pending_forward_cell, cell, CM_CELL_SIZE);
+                memcpy(s_pending_forward_sig, sig, CM_FRAME_SIG_SIZE);
+                memcpy(s_pending_forward_next, fwd.segments[my_hop + 1], 6);
                 s_pending_forward   = true;
             } else {
                 s_forward_overruns++;
@@ -1293,16 +1314,25 @@ static void on_radio_recv(const uint8_t sender_mac[6],
         // that passes the flow_id check if it is not destined for this device.
         // Only consume (valid=false) once we confirm this Cell B is for us.
 
-        // Is this burst addressed to me at this hop?
-        // If segments_remaining > 0, segments[0] must be my MAC.
-        // If segments_remaining == 0, the previous hop addressed me (deliver).
-        if (pb.segments_remaining > 0 &&
-            memcmp(pb.segments[0], s_my_mac, 6) != 0) {
-            return;  // not for me at this hop — preserve burst slot for relay
+        // ── Where am I on this path? ─────────────────────────────────────
+        // Both cells are relayed unchanged, so segments[] is the whole route
+        // and hop_index stays as the origin set it. A device finds itself by
+        // position — which is what lets Cell A's signature verify at every hop
+        // instead of only the first.
+        uint8_t my_hop = 0xff;
+        uint8_t path_len = pa.total_hops;
+        if (path_len > CM_FORWARD_MAX_HOPS) path_len = CM_FORWARD_MAX_HOPS;
+        for (uint8_t i = 0; i < path_len; i++) {
+            if (memcmp(pb.segments[i], s_my_mac, 6) == 0) { my_hop = i; break; }
+        }
+        if (my_hop == 0xff) return;  // not on this route — keep the burst slot
+        // Ordering: hop 0 takes it from the origin, later hops only from their
+        // predecessor. Without this the last hop accepts the origin's broadcast
+        // first and the route is decorative.
+        if (my_hop > 0 && memcmp(sender_mac, pb.segments[my_hop - 1], 6) != 0) {
+            return;
         }
         s_fwdv2_burst.valid = false;  // consume the slot now that we own this hop
-
-        uint8_t my_hop = pa.hop_index;
 
         // ── Capability check using Cell A's signing key ────────────────────
         {
@@ -1329,18 +1359,18 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                          chid ? chid[2] : 0, chid ? chid[3] : 0);
                 return;
             }
-            // Verify Cell A's sig (stored at burst time) against the edge key.
-            // NOTE: relay devices rebuild Cell A with a zero sig (routing fields
-            // mutate per hop — the payload changes with hop_index so the original
-            // sig is intentionally cleared by design).  When primary_sig is all-
-            // zeros the route is trusted on the strength of the cap cert alone.
-            static const uint8_t ZERO_SIG[CM_FRAME_SIG_SIZE] = {0};
-            if (memcmp(s_fwdv2_burst.primary_sig, ZERO_SIG, CM_FRAME_SIG_SIZE) != 0) {
-                if (cm_sig_verify(edge_pk, fwd_hash, s_fwdv2_burst.primary_sig) != 0) {
-                    ESP_LOGW(TAG, "RX [%s] forward.v2: sig INVALID (edge key) — DROP",
-                             mac_str);
-                    return;
-                }
+            // Verify Cell A's signature. Unconditionally.
+            //
+            // This used to be conditional: a relay rebuilt Cell A with a zero
+            // sig, because hop_index lived in the signed bytes and mutating it
+            // destroyed the signature — so an all-zero sig meant "trust the
+            // capability cert alone". Relaying verbatim removes the reason for
+            // that concession, so the concession goes with it. An unsigned
+            // Cell A is now simply refused.
+            if (cm_sig_verify(edge_pk, fwd_hash, s_fwdv2_burst.primary_sig) != 0) {
+                ESP_LOGW(TAG, "RX [%s] forward.v2: sig INVALID (edge key) — DROP",
+                         mac_str);
+                return;
             }
             ESP_LOGI(TAG, "RX [%s] forward.v2: CAP-verified hop=%u", mac_str, (unsigned)my_hop);
         }
@@ -1384,9 +1414,15 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                      (unsigned)s_fwd_channel.device_share);
         }
 
-        // ── Step ──────────────────────────────────────────────────────────
+        // ── Relay or deliver, by position on an immutable path ────────────
         uint8_t next_mac[6] = {0};
-        cm_forward_step_rc_t rc = cm_forward_v2_step(&pa, &pb, next_mac);
+        cm_forward_step_rc_t rc;
+        if (my_hop + 1 < path_len) {
+            memcpy(next_mac, pb.segments[my_hop + 1], 6);
+            rc = CM_FWD_NEXT;
+        } else {
+            rc = CM_FWD_DELIVERED;
+        }
 
         if (rc == CM_FWD_DELIVERED) {
             char preview[33] = {0};
@@ -1395,22 +1431,26 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             memcpy(preview, pa.inner_payload, n);
             ESP_LOGI(TAG, "*** FORWARD.V2 DELIVERED *** from=[%s] hop=%u verb=%u "
                      "ds=%u inner='%s'",
-                     mac_str, (unsigned)pa.hop_index,
+                     mac_str, (unsigned)my_hop,
                      (unsigned)pa.hop_verb,
                      (unsigned)s_fwd_channel.device_share, preview);
             s_blink_until_us = esp_timer_get_time()
                              + (uint64_t)FORWARD_DELIVERED_BLINK_MS * 1000ULL;
         } else if (rc == CM_FWD_NEXT) {
             ESP_LOGI(TAG, "RX [%s] forward.v2 → relay; next=%02x:%02x:%02x:%02x:%02x:%02x "
-                     "remaining=%u ds=%u",
+                     "hop=%u/%u ds=%u",
                      mac_str, next_mac[0], next_mac[1], next_mac[2],
                      next_mac[3], next_mac[4], next_mac[5],
-                     (unsigned)pb.segments_remaining,
+                     (unsigned)my_hop, (unsigned)path_len,
                      (unsigned)s_fwd_channel.device_share);
             if (!s_pending_forward_v2) {
-                s_pending_fwdv2_a           = pa;
-                s_pending_fwdv2_b           = pb;
-                s_pending_fwdv2_domain      = cm_flags(cell);
+                // Both cells verbatim: Cell A as the origin signed it (already
+                // held in the burst slot) and Cell B exactly as it arrived.
+                memcpy(s_pending_fwdv2_cell_a, s_fwdv2_burst.primary_cell, CM_CELL_SIZE);
+                memcpy(s_pending_fwdv2_sig_a,  s_fwdv2_burst.primary_sig,  CM_FRAME_SIG_SIZE);
+                memcpy(s_pending_fwdv2_cell_b, cell, CM_CELL_SIZE);
+                memcpy(s_pending_fwdv2_sig_b,  sig,  CM_FRAME_SIG_SIZE);
+                memcpy(s_pending_fwdv2_next,   pb.segments[my_hop + 1], 6);
                 s_pending_fwdv2_cell_a_sent = false;  // Cell A' not yet sent
                 s_pending_fwdv2_retry_skip  = 0;
                 s_fwdv2_cell_b_sends_left   = 3;      // redundant Cell B sends
@@ -1936,7 +1976,10 @@ static void broadcast_forward_route(void) {
     fwd.inner_payload_len = sizeof(inner) - 1;
 
     uint8_t cell[CM_CELL_SIZE], sig[CM_FRAME_SIG_SIZE];
-    if (build_forward_cell(s_pending_forward_domain, &fwd, cell, sig) != 0) {
+    // Originating, not relaying — this device is the source, so it declares
+    // the rail itself. forward.v0 is unsigned, so the flag is a namespace
+    // label here rather than an authority claim.
+    if (build_forward_cell(CM_DOMAIN_MESH_TELEMETRY, &fwd, cell, sig) != 0) {
         ESP_LOGE(TAG, "forward: build_forward_cell failed");
         return;
     }
@@ -2298,18 +2341,16 @@ static bool actuator_activate_tx_tick(uint64_t now_us) {
 // the cell from the (mutated) cm_forward_t and broadcast.
 static void drain_pending_forward(void) {
     if (!s_pending_forward) return;
-    cm_forward_t fwd = s_pending_forward_f;
     s_pending_forward = false;
 
-    uint8_t cell[CM_CELL_SIZE], sig[CM_FRAME_SIG_SIZE];
-    if (build_forward_cell(s_pending_forward_domain, &fwd, cell, sig) != 0) {
-        ESP_LOGW(TAG, "forward relay: build_forward_cell failed");
-        return;
-    }
     uint32_t cell_id = (uint32_t)esp_random();
-    if (cm_radio_send_cell(cell, sig, cell_id) == 0) {
-        ESP_LOGI(TAG, "TX *** FORWARD RELAY *** hop_index=%u remaining=%u cell_id=0x%08x",
-                 (unsigned)fwd.hop_index, (unsigned)fwd.segments_remaining,
+    if (cm_radio_send_cell_to(s_pending_forward_next, s_pending_forward_cell,
+                              s_pending_forward_sig, cell_id) == 0) {
+        ESP_LOGI(TAG, "TX *** FORWARD RELAY *** -> %02x:%02x:%02x:%02x:%02x:%02x "
+                 "cell_id=0x%08x (verbatim)",
+                 s_pending_forward_next[0], s_pending_forward_next[1],
+                 s_pending_forward_next[2], s_pending_forward_next[3],
+                 s_pending_forward_next[4], s_pending_forward_next[5],
                  (unsigned)cell_id);
     }
 }
@@ -2350,41 +2391,7 @@ static void drain_pending_forward_v1(void) {
 // from the decoded structs queued by the WiFi-task receive handler, then
 // broadcasts both cells back-to-back.  Called on the main pthread only so
 // cm_radio_send_cell serialisation matches the rest of the drainers.
-static int build_forward_v2_cell_a(uint32_t domain_flag, const cm_forward_v2_t *pa,
-                                    uint8_t out_cell[CM_CELL_SIZE],
-                                    uint8_t out_sig[CM_FRAME_SIG_SIZE]) {
-    cm_cell_init(out_cell);
-    cm_set_flags(out_cell, domain_flag);   // carry the relayed cell's domain
-    cm_set_linearity(out_cell, CM_LINEARITY_AFFINE);
-    memcpy(cm_type_hash_mut(out_cell), s_forward_v2_type_hash, 32);
 
-    uint8_t payload[CM_PAYLOAD_SIZE];
-    size_t  used = 0;
-    if (cm_forward_v2_encode(pa, payload, &used) != 0) return -1;
-    memcpy(cm_payload_mut(out_cell), payload, used);
-    cm_set_payload_total(out_cell, (uint32_t)used);
-
-    memset(out_sig, 0, CM_FRAME_SIG_SIZE);   // routing fields mutate per hop — unsigned
-    return 0;
-}
-
-static int build_forward_v2_cell_b(uint32_t domain_flag, const cm_routing_cont_t *pb,
-                                    uint8_t out_cell[CM_CELL_SIZE],
-                                    uint8_t out_sig[CM_FRAME_SIG_SIZE]) {
-    cm_cell_init(out_cell);
-    cm_set_flags(out_cell, domain_flag);   // carry the relayed cell's domain
-    cm_set_linearity(out_cell, CM_LINEARITY_AFFINE);
-    memcpy(cm_type_hash_mut(out_cell), s_routing_cont_type_hash, 32);
-
-    uint8_t payload[CM_PAYLOAD_SIZE];
-    size_t  used = 0;
-    if (cm_routing_cont_encode(pb, payload, &used) != 0) return -1;
-    memcpy(cm_payload_mut(out_cell), payload, used);
-    cm_set_payload_total(out_cell, (uint32_t)used);
-
-    memset(out_sig, 0, CM_FRAME_SIG_SIZE);   // routing continuation — unsigned
-    return 0;
-}
 
 static void drain_pending_forward_v2(void) {
     if (!s_pending_forward_v2) return;
@@ -2395,13 +2402,7 @@ static void drain_pending_forward_v2(void) {
         return;
     }
 
-    cm_forward_v2_t   pa = s_pending_fwdv2_a;
-    cm_routing_cont_t pb = s_pending_fwdv2_b;
     s_pending_forward_v2 = false;
-
-    // Static to avoid 2×1088 B stack alloc in the main-loop path.
-    static uint8_t cell_a[CM_CELL_SIZE], sig_a[CM_FRAME_SIG_SIZE];
-    static uint8_t cell_b[CM_CELL_SIZE], sig_b[CM_FRAME_SIG_SIZE];
 
     // Two-phase relay to guarantee Cell A' reaches the destination before Cell B'.
     //
@@ -2412,55 +2413,47 @@ static void drain_pending_forward_v2(void) {
     // Phase 2 (Cell A' already sent and propagated): send Cell B'.  Repeat up to
     // s_fwdv2_cell_b_sends_left times for redundancy.
     if (!s_pending_fwdv2_cell_a_sent) {
-        // ── Phase 1: send Cell A' ────────────────────────────────────────────
-        if (build_forward_v2_cell_a(s_pending_fwdv2_domain, &pa, cell_a, sig_a) != 0) {
-            ESP_LOGW(TAG, "forward.v2 relay: build cell_a failed");
-            return;
-        }
+        // ── Phase 1: send Cell A verbatim ───────────────────────────────────
+        // No rebuild. These are the bytes the origin signed, so the signature
+        // still covers them and the next hop verifies it rather than trusting
+        // the capability cert on its own.
         uint32_t id_a = (uint32_t)esp_random();
-        int rc_a = cm_radio_send_cell(cell_a, sig_a, id_a);
+        int rc_a = cm_radio_send_cell_to(s_pending_fwdv2_next, s_pending_fwdv2_cell_a,
+                                         s_pending_fwdv2_sig_a, id_a);
         if (rc_a == 0) {
-            // Cell A' queued — wait 150 ms before sending Cell B'.
+            // Cell A queued — wait 150 ms before sending Cell B.
             s_pending_fwdv2_cell_a_sent = true;
-            s_pending_fwdv2_a          = pa;
-            s_pending_fwdv2_b          = pb;
             s_pending_forward_v2       = true;
-            s_pending_fwdv2_retry_skip = 3;   // ~150 ms for Cell A' to propagate
-            ESP_LOGI(TAG, "forward.v2 relay Phase1: Cell A' sent id_a=0x%08x hop=%u — waiting 150ms",
-                     (unsigned)id_a, (unsigned)pa.hop_index);
+            s_pending_fwdv2_retry_skip = 3;   // ~150 ms for Cell A to propagate
+            ESP_LOGI(TAG, "forward.v2 relay Phase1: Cell A sent id_a=0x%08x — waiting 150ms "
+                     "(verbatim, sig intact)", (unsigned)id_a);
         } else {
-            // NO_MEM on Cell A' — retry with backoff.
-            s_pending_fwdv2_a          = pa;
-            s_pending_fwdv2_b          = pb;
+            // NO_MEM on Cell A — retry with backoff.
             s_pending_forward_v2       = true;
             s_pending_fwdv2_retry_skip = 10;  // ~500 ms
-            ESP_LOGW(TAG, "forward.v2 relay Phase1: Cell A' NO_MEM rc=%d — retry in ~500ms", rc_a);
+            ESP_LOGW(TAG, "forward.v2 relay Phase1: Cell A NO_MEM rc=%d — retry in ~500ms", rc_a);
         }
-        return;  // always return after Phase 1 — Cell B' waits for next tick
+        return;  // always return after Phase 1 — Cell B waits for next tick
     }
 
-    // ── Phase 2: Cell A' already sent and propagated — send Cell B' ─────────
-    if (build_forward_v2_cell_b(s_pending_fwdv2_domain, &pb, cell_b, sig_b) != 0) {
-        ESP_LOGW(TAG, "forward.v2 relay: build cell_b failed");
-        return;
-    }
+    // ── Phase 2: Cell A already sent and propagated — send Cell B verbatim ──
     uint32_t id_b = (uint32_t)esp_random();
-    int rc_b = cm_radio_send_cell(cell_b, sig_b, id_b);
+    int rc_b = cm_radio_send_cell_to(s_pending_fwdv2_next, s_pending_fwdv2_cell_b,
+                                     s_pending_fwdv2_sig_b, id_b);
 
     if (rc_b == 0) {
         if (s_fwdv2_cell_b_sends_left > 0) {
             s_fwdv2_cell_b_sends_left--;
-            ESP_LOGI(TAG, "TX *** FORWARD.V2 RELAY *** hop=%u segs_rem=%u "
-                     "id_b=0x%08x inner=%u (redundant_left=%u)",
-                     (unsigned)pa.hop_index,
-                     (unsigned)pb.segments_remaining,
+            ESP_LOGI(TAG, "TX *** FORWARD.V2 RELAY *** -> %02x:%02x:%02x:%02x:%02x:%02x "
+                     "id_b=0x%08x (verbatim, redundant_left=%u)",
+                     s_pending_fwdv2_next[0], s_pending_fwdv2_next[1],
+                     s_pending_fwdv2_next[2], s_pending_fwdv2_next[3],
+                     s_pending_fwdv2_next[4], s_pending_fwdv2_next[5],
                      (unsigned)id_b,
-                     (unsigned)pa.inner_payload_len,
                      (unsigned)s_fwdv2_cell_b_sends_left);
             if (s_fwdv2_cell_b_sends_left > 0) {
-                // Queue another redundant Cell B send (150 ms apart).
-                s_pending_fwdv2_a          = pa;
-                s_pending_fwdv2_b          = pb;
+                // Queue another redundant Cell B send (150 ms apart). The
+                // stashed bytes are still there — nothing to re-copy.
                 s_pending_forward_v2       = true;
                 s_pending_fwdv2_retry_skip = 3;   // ~150 ms between redundant sends
             } else {
@@ -2471,8 +2464,6 @@ static void drain_pending_forward_v2(void) {
     } else {
         ESP_LOGW(TAG, "forward.v2 relay Phase2: Cell B' rc=%d", rc_b);
         if (rc_b == ESP_ERR_ESPNOW_NO_MEM) {
-            s_pending_fwdv2_a          = pa;
-            s_pending_fwdv2_b          = pb;
             s_pending_forward_v2       = true;
             s_pending_fwdv2_retry_skip = 10;  // ~500 ms to drain the ESP-NOW queue
             ESP_LOGW(TAG, "forward.v2 relay Phase2: NO_MEM — retry in ~500ms");

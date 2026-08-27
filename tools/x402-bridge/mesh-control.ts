@@ -798,7 +798,11 @@ const server = Bun.serve({
         if (!s_capCertInjected) {
           await injectCapabilityCert(chId, chHex, fwdInjectPort);
           s_capCertInjected = true;
-          await sleep(300);
+          // 3000 ms for the same measured reason as the forward.v1 route: at
+          // ~267 ms per cm_sig_verify, with each cell sent twice, a cert costs
+          // the receiver more than a second of blocked radio callback and the
+          // next cell's frames are dropped.
+          await sleep(3000);
         }
 
         // Advance per-hop channel state
@@ -844,7 +848,24 @@ const server = Bun.serve({
         const sigB  = new Uint8Array(64);  // Cell B unsigned (zeros)
 
         await injectCellSig(cellA, sigA, fwdInjectPort);
-        await sleep(20);  // brief gap so devices receive Cell A first
+        // 2500 ms, not 20. Both hop-0 boards logged "routing.cont: no matching
+        // Cell A": Cell B arrived and Cell A never did, at 20 ms AND at 1500 ms.
+        //
+        // The cause is on the injecting board, not the air. With
+        // DEMO_SCRIPT_ONLY the serial injector does not broadcast immediately —
+        // it copies the cell into ONE static staging pair (s_demo_cell /
+        // s_demo_sig) and schedules a broadcast DEMO_BROADCAST_DELAY_MS = 1800 ms
+        // later. A second injection arriving inside that window overwrites the
+        // staged cell, so only the LAST one is ever transmitted.
+        //
+        // forward.v1 never noticed because injectCellSig sends ONE cell twice:
+        // the retry overwrites the original with an identical copy. v2 sends two
+        // DIFFERENT cells, so Cell A was silently replaced by Cell B every time.
+        //
+        // So the gap has to clear the staging window, not just the air. The
+        // burst slot has no TTL (cm_fwdv2_burst_slot_t is
+        // {primary, primary_cell, primary_sig, valid}), so Cell A waits happily.
+        await sleep(2500);
         await injectCellSig(cellB, sigB, fwdInjectPort);
 
         const certHashHex = certHashBytes ? Buffer.from(certHashBytes).toString('hex').slice(0, 8) + '...' : 'none';
