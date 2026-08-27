@@ -1,0 +1,303 @@
+{
+  "_comment": "Cross-implementation DERIVATION golden vector. GENERATED — do not hand-edit; regenerate with `pnpm build && node tools/gen-derivation-vector.mjs`. TEST-ONLY synthetic keys from a fixed email/salt; NEVER reuse on mainnet.",
+  "schemaVersion": 1,
+  "oracle": "@dusk-inc/plexus-sdk",
+  "generator": "tools/gen-derivation-vector.mjs",
+  "constants": {
+    "pbkdf2": {
+      "iterations": 100000,
+      "keyLength": 32,
+      "digest": "sha512",
+      "note": "deriveRootKey(email, salt) = PBKDF2(password=email, salt=salt). The email is the PASSWORD slot."
+    },
+    "certificateTypes": {
+      "root": "plexus.identity.root",
+      "derived": "plexus.identity.derived"
+    },
+    "domainFlags": {
+      "SIGNING": 2,
+      "ENCRYPTION": 3,
+      "SOVEREIGN_FLAG": 130562
+    },
+    "encodings": {
+      "invoiceNumber": "`${resourceId}:${domainFlag}:${childIndex}` — domainFlag DECIMAL, no padding, no escaping",
+      "certFieldsDomainFlag": "`0x${flag.toString(16)}` — HEX, lowercase, UNPADDED",
+      "privateKeyHex": "64-char lowercase hex, zero-padded to 32 bytes",
+      "publicKeyHex": "33-byte compressed SEC, lowercase hex"
+    }
+  },
+  "universe": {
+    "rootEmail": "vector@plexus.test",
+    "rootSalt": "plexus-cross-impl-vector-v1"
+  },
+  "rootKeys": [
+    {
+      "email": "vector@plexus.test",
+      "salt": "plexus-cross-impl-vector-v1",
+      "privHex": "fe99e571a1efe336bae65e3c18ceeca686333fcbcfff5b08ecf5fed42d0f8398",
+      "pubHex": "028abd82d22850c0bff781e9a47e7d4f7bd6bf58102baad9baf5f8fa17d0c2cfa4"
+    },
+    {
+      "email": "vector@plexus.test",
+      "salt": "a-different-salt",
+      "privHex": "6ad480f96dea9926ed1633bce7a8ded7b28a1f5193ae47038cbba6a8a29de7e1",
+      "pubHex": "023fd6c8e76ef494c277c237f7308e9e32b83b7620a861b124b4228e73a569f418"
+    },
+    {
+      "email": "other@plexus.test",
+      "salt": "plexus-cross-impl-vector-v1",
+      "privHex": "ed41263b066b26079b5807e9cfbb536ff32c997e6726833ab0399e192d5120d9",
+      "pubHex": "03ccb6880aae6438b3890596be8d4e2a96af0236234da596b7f297a6961242e815"
+    }
+  ],
+  "invoiceNumbers": [
+    {
+      "resourceId": "inbox",
+      "domainFlag": 2,
+      "childIndex": 0,
+      "domainFlagDecimal": "2",
+      "domainFlagCertEncoding": "0x2",
+      "invoiceNumber": "inbox:2:0"
+    },
+    {
+      "resourceId": "inbox",
+      "domainFlag": 2,
+      "childIndex": 1,
+      "domainFlagDecimal": "2",
+      "domainFlagCertEncoding": "0x2",
+      "invoiceNumber": "inbox:2:1"
+    },
+    {
+      "resourceId": "inbox",
+      "domainFlag": 3,
+      "childIndex": 0,
+      "domainFlagDecimal": "3",
+      "domainFlagCertEncoding": "0x3",
+      "invoiceNumber": "inbox:3:0"
+    },
+    {
+      "resourceId": "archive",
+      "domainFlag": 2,
+      "childIndex": 0,
+      "domainFlagDecimal": "2",
+      "domainFlagCertEncoding": "0x2",
+      "invoiceNumber": "archive:2:0"
+    },
+    {
+      "resourceId": "inbox",
+      "domainFlag": 130562,
+      "childIndex": 7,
+      "domainFlagDecimal": "130562",
+      "domainFlagCertEncoding": "0x1fe02",
+      "invoiceNumber": "inbox:130562:7"
+    },
+    {
+      "resourceId": "a:b",
+      "domainFlag": 2,
+      "childIndex": 0,
+      "domainFlagDecimal": "2",
+      "domainFlagCertEncoding": "0x2",
+      "invoiceNumber": "a:b:2:0"
+    }
+  ],
+  "kdf": {
+    "plexus-kdf-v1": {
+      "description": "BRC-42 bilateral: parentPriv.deriveChild(parentPub, invoiceNumber). Self-derivation folds an ECDH secret against the parent's OWN public key.",
+      "cases": [
+        {
+          "invoiceNumber": "inbox:2:0",
+          "privHex": "a944d24511981a2277967f3a5dd7d27e8fb417cd4d7c8d8650a06076df816e1e",
+          "pubHex": "02237e12d171edde88f1c6980db9e289788dc418ed251cdecc9683e6186a702ede"
+        },
+        {
+          "invoiceNumber": "archive:130562:3",
+          "privHex": "eeaaf8c51418504333952da4336dc439083e245528314796100124a6d56bc684",
+          "pubHex": "03119e669e0722b2eac06cfac6a35178f9b398699a33709ddae3aba2a936173a07"
+        }
+      ]
+    },
+    "plexus-kdf-v2": {
+      "description": "Unilateral: child = parent + SHA256(utf8(segment)) mod n. No counterparty, no ECDH.",
+      "cases": [
+        {
+          "segment": "inbox:2:0",
+          "privHex": "f5f2a6feffcadb988d7f566e0ad12799221128c05e222db3e4a6f291dadb235d",
+          "pubHex": "02faceb380987f284c5dac83844d1e109af32a78751016cd2a5f89897f70636a3f"
+        },
+        {
+          "segment": "funding",
+          "privHex": "23aec6b8fccde2ea33e40ebab2df7ebf378e3ee0f1e0a697d9f3a9df75ab95a3",
+          "pubHex": "033cc6e5eb61041fb00b36d476490cff40055ec417f80cfc616121b877a2fa5f05"
+        }
+      ]
+    },
+    "plexus-kdf-v3": {
+      "description": "Domain-separated: child = parent + SHA256(be32(domainFlag) || utf8(segment)) mod n. The 4-byte tag is BIG-ENDIAN and precedes the segment.",
+      "cases": [
+        {
+          "domainFlag": 2,
+          "segment": "inbox:2:0",
+          "domainFlagCertEncoding": "0x2",
+          "privHex": "98ae68770eb0fee2b79273d3fe06bb971b25dd3b1b31ff2ea6a5da286dcd4ac1",
+          "pubHex": "022579a8f94f3b6f65653fad72ba6ffd14c9818543559e4e66b0952d0d448415c8"
+        },
+        {
+          "domainFlag": 130562,
+          "segment": "inbox:2:0",
+          "domainFlagCertEncoding": "0x1fe02",
+          "privHex": "1d73baeb247d4ba431245194779e15c60ca7e526b628cfdbe49ebca7b59dfb96",
+          "pubHex": "031a5dee4e6f252b7a7593177730e319cf6cbe96e39a2a799132da01769dbe03de"
+        }
+      ]
+    }
+  },
+  "derivationPaths": [
+    {
+      "path": "root",
+      "privHex": "fe99e571a1efe336bae65e3c18ceeca686333fcbcfff5b08ecf5fed42d0f8398",
+      "pubHex": "028abd82d22850c0bff781e9a47e7d4f7bd6bf58102baad9baf5f8fa17d0c2cfa4"
+    },
+    {
+      "path": "root/inbox:2:0",
+      "privHex": "a944d24511981a2277967f3a5dd7d27e8fb417cd4d7c8d8650a06076df816e1e",
+      "pubHex": "02237e12d171edde88f1c6980db9e289788dc418ed251cdecc9683e6186a702ede"
+    },
+    {
+      "path": "root/inbox:2:0/sub:3:2",
+      "privHex": "fde9b9e32271f96153959946803013b258596994815840abd59c82f5c55aaeab",
+      "pubHex": "03ae1e6c2f4c7dda70fc838e8c20f7261c5ddd1f27a77e8dafa90e2b206899eb93"
+    }
+  ],
+  "certIds": [
+    {
+      "label": "root",
+      "preimage": {
+        "subjectPublicKey": "028abd82d22850c0bff781e9a47e7d4f7bd6bf58102baad9baf5f8fa17d0c2cfa4",
+        "certifierPublicKey": "028abd82d22850c0bff781e9a47e7d4f7bd6bf58102baad9baf5f8fa17d0c2cfa4",
+        "type": "plexus.identity.root",
+        "serialNumber": "72d7d9ef6470791b6e9386c02ba47532b27a942c8014f84f5d1815c461acccf1",
+        "fields": {
+          "email": "vector@plexus.test"
+        }
+      },
+      "canonicalJson": "{\"certifierPublicKey\":\"028abd82d22850c0bff781e9a47e7d4f7bd6bf58102baad9baf5f8fa17d0c2cfa4\",\"fields\":{\"email\":\"vector@plexus.test\"},\"serialNumber\":\"72d7d9ef6470791b6e9386c02ba47532b27a942c8014f84f5d1815c461acccf1\",\"subjectPublicKey\":\"028abd82d22850c0bff781e9a47e7d4f7bd6bf58102baad9baf5f8fa17d0c2cfa4\",\"type\":\"plexus.identity.root\"}",
+      "certId": "a50a75a391546bb8d133f558ecceb12810315b7adbf10e74de7c4ff67a62958f"
+    },
+    {
+      "label": "derived-child",
+      "preimage": {
+        "subjectPublicKey": "037e9a3e5e6550da0916182c619c7940c4b37c37bcc24b6c35ec3f8f0bf0f514c7",
+        "certifierPublicKey": "028abd82d22850c0bff781e9a47e7d4f7bd6bf58102baad9baf5f8fa17d0c2cfa4",
+        "type": "plexus.identity.derived",
+        "serialNumber": "f9f02bb0d0fde63f338de5a2418ef989708b1d3457b90cb978a152fe887b1407",
+        "fields": {
+          "resourceId": "inbox",
+          "domainFlag": "0x1fe02",
+          "childIndex": "0"
+        }
+      },
+      "canonicalJson": "{\"certifierPublicKey\":\"028abd82d22850c0bff781e9a47e7d4f7bd6bf58102baad9baf5f8fa17d0c2cfa4\",\"fields\":{\"childIndex\":\"0\",\"domainFlag\":\"0x1fe02\",\"resourceId\":\"inbox\"},\"serialNumber\":\"f9f02bb0d0fde63f338de5a2418ef989708b1d3457b90cb978a152fe887b1407\",\"subjectPublicKey\":\"037e9a3e5e6550da0916182c619c7940c4b37c37bcc24b6c35ec3f8f0bf0f514c7\",\"type\":\"plexus.identity.derived\"}",
+      "certId": "9d6b3ec773905b7a3649948e626219acc57344141e0cde037f97f6d86ee1b65a"
+    },
+    {
+      "label": "derived-child-scrambled-key-order",
+      "preimage": {
+        "fields": {
+          "childIndex": "0",
+          "domainFlag": "0x1fe02",
+          "resourceId": "inbox"
+        },
+        "serialNumber": "f9f02bb0d0fde63f338de5a2418ef989708b1d3457b90cb978a152fe887b1407",
+        "type": "plexus.identity.derived",
+        "certifierPublicKey": "028abd82d22850c0bff781e9a47e7d4f7bd6bf58102baad9baf5f8fa17d0c2cfa4",
+        "subjectPublicKey": "037e9a3e5e6550da0916182c619c7940c4b37c37bcc24b6c35ec3f8f0bf0f514c7"
+      },
+      "canonicalJson": "{\"certifierPublicKey\":\"028abd82d22850c0bff781e9a47e7d4f7bd6bf58102baad9baf5f8fa17d0c2cfa4\",\"fields\":{\"childIndex\":\"0\",\"domainFlag\":\"0x1fe02\",\"resourceId\":\"inbox\"},\"serialNumber\":\"f9f02bb0d0fde63f338de5a2418ef989708b1d3457b90cb978a152fe887b1407\",\"subjectPublicKey\":\"037e9a3e5e6550da0916182c619c7940c4b37c37bcc24b6c35ec3f8f0bf0f514c7\",\"type\":\"plexus.identity.derived\"}",
+      "certId": "9d6b3ec773905b7a3649948e626219acc57344141e0cde037f97f6d86ee1b65a"
+    }
+  ],
+  "edges": {
+    "sharedSecret": {
+      "aliceToBob": "c64cbcf1f5a42774382ff12d810dc21ab4b7d17869a40cb164691d92cbc4743d",
+      "bobToAlice": "c64cbcf1f5a42774382ff12d810dc21ab4b7d17869a40cb164691d92cbc4743d",
+      "alicePubHex": "036fe3e31d320c41d7a9005abbefec4223a4076d1efcbc40853e0eef48c4c19bd9",
+      "bobPubHex": "029a1df6cb51bb2e7a51c183cffe676930364da3b2d9da93ba8b5aa0fa4debd3fb",
+      "note": "Both directions MUST be equal — that equality is what lets two sides confirm the same edge without transmitting the secret."
+    },
+    "edgeSk": [
+      {
+        "signingKeyIndex": 0,
+        "privHex": "52f70889d5d109bba66955ba20e7a594ccd5a47c7bbf54feebb3b9a5cdcddb98",
+        "pubHex": "02296e84f929baee33e96631355704ef264f192475f50146be137b1d3329d75901"
+      },
+      {
+        "signingKeyIndex": 1,
+        "privHex": "07fb8a289e6d8b947642d683e5a22d103d13a3cd3b7be360e529c4679b293140",
+        "pubHex": "0226c8c21b70cc33dfe61140e860157cf838dcda9795ccd2fb4d8d1cf3eed2b195"
+      },
+      {
+        "signingKeyIndex": 5,
+        "privHex": "857bae7fe9088bea37b564ff0e6efd4bf43bef284292d541efad502f5ebf209e",
+        "pubHex": "03dcbb9ea0aa4317c4501fe2843b572e25d81084f10171d09d38669895b8cf3253"
+      }
+    ]
+  },
+  "childCounterSequence": {
+    "rootCertId": "a50a75a391546bb8d133f558ecceb12810315b7adbf10e74de7c4ff67a62958f",
+    "note": "Replay these calls in order against a freshly registered root. A parent-only counter yields childIndex 0,1,2,3,4 instead of 0,1,0,0,2.",
+    "wrongIfKeyedOnParentAlone": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "steps": [
+      {
+        "resourceId": "inbox",
+        "domainFlag": 2,
+        "childIndex": 0,
+        "invoiceNumber": "inbox:2:0",
+        "derivationPath": "root/inbox:2:0",
+        "publicKey": "02237e12d171edde88f1c6980db9e289788dc418ed251cdecc9683e6186a702ede",
+        "certId": "33a08fd8bbeaa837efd737830c1e1ca22d658472172f0534c4088fec01db85a9"
+      },
+      {
+        "resourceId": "inbox",
+        "domainFlag": 2,
+        "childIndex": 1,
+        "invoiceNumber": "inbox:2:1",
+        "derivationPath": "root/inbox:2:1",
+        "publicKey": "028d7b618e6ad3da39a0914d83b9b74673c27f53879e4be3e1c218f6b35e6cfdc1",
+        "certId": "ac4ac7ae94f555c220a4a3cdfbcfafc2cb5095e695ef0ae827b1dddcf3c05b09"
+      },
+      {
+        "resourceId": "inbox",
+        "domainFlag": 3,
+        "childIndex": 0,
+        "invoiceNumber": "inbox:3:0",
+        "derivationPath": "root/inbox:3:0",
+        "publicKey": "038f3ee89f8814bca798762a73c450012c9d0e94db71dbba1a7275015d6a13457a",
+        "certId": "2b41d3ef4603a74075dcc336c45f82a2d26b99b0560eaec7c579532ed2607ffe"
+      },
+      {
+        "resourceId": "archive",
+        "domainFlag": 2,
+        "childIndex": 0,
+        "invoiceNumber": "archive:2:0",
+        "derivationPath": "root/archive:2:0",
+        "publicKey": "02f633e8931985f06bca2bd0048a556d769f93cd8c83c28cb49bbaaf1e69efb999",
+        "certId": "1e2fea0db7c27af2aaec5fe7fd25b303c6671e984bfe929676d0159938aec863"
+      },
+      {
+        "resourceId": "inbox",
+        "domainFlag": 2,
+        "childIndex": 2,
+        "invoiceNumber": "inbox:2:2",
+        "derivationPath": "root/inbox:2:2",
+        "publicKey": "03eb366a7332bdbc29f24df62faa0c506b579fa55088d16e9022205cc8680f969e",
+        "certId": "0d35e72f27c240c603a8a5a88e7d7e63b43197846d169551ab128f10ae66082e"
+      }
+    ]
+  }
+}

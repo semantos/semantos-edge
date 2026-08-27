@@ -28,7 +28,8 @@
     "fleet:demo": "bun tools/fleet/provision.ts",
     "fleet:test": "bun test tools/fleet/",
     "fleet:anchor": "bun tools/fleet/anchor.ts",
-    "fleet:hw": "bun tools/fleet/hardware.ts"
+    "fleet:hw": "bun tools/fleet/hardware.ts",
+    "fleet:zig:test": "cd tools/fleet-zig && zig build test --summary all"
   },
   "dependencies": {
     "@bsv/sdk": "^2.0.0"
