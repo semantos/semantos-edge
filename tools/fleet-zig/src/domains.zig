@@ -59,6 +59,33 @@ pub const org_member: u64 = fleet_page | 0x02;
 pub const sovereign_min: u64 = 0x0001_0000;
 pub const sovereign_max: u64 = 0xffff_ffff;
 
+/// The largest flag OP_CHECKDOMAINFLAG can be handed unambiguously.
+///
+/// ⚠ Measured against the live engine, not inferred. The opcode reads the
+/// expected flag off the stack as a BSV SCRIPT NUMBER — sign-magnitude, little
+/// endian, bit 7 of the top byte is the SIGN. A four-byte push of 0x80000000 is
+/// the bytes `00 00 00 80`, which is script-number NEGATIVE ZERO, so the engine
+/// compares it as 0 — and a cell declaring domain 0 then ACCEPTS against an
+/// expected flag of 0x80000000. Same for 0xffffffff.
+///
+/// That is a silent authorisation bypass for any flag with bit 31 set, so this
+/// layer refuses to allocate one. Reproduced for three values and pinned in
+/// `components/cell-mesh/test/vectors/gen-domainflag-vectors.mjs`, which fails
+/// if the engine ever stops behaving this way.
+pub const script_safe_max: u64 = 0x7fff_ffff;
+
+/// Is this flag safe to hand to OP_CHECKDOMAINFLAG?
+pub fn isScriptSafe(flag: u64) bool {
+    return flag <= script_safe_max;
+}
+
+comptime {
+    // A flag this layer allocates must never be one the engine misreads.
+    if (!isScriptSafe(zone)) @compileError("zone flag has bit 31 set");
+    if (!isScriptSafe(fleet_device)) @compileError("fleet_device flag has bit 31 set");
+    if (!isScriptSafe(org_member)) @compileError("org_member flag has bit 31 set");
+}
+
 pub fn isSovereign(flag: u64) bool {
     return flag >= sovereign_min and flag <= sovereign_max;
 }

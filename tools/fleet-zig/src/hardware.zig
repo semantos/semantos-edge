@@ -260,8 +260,9 @@ pub fn main() !void {
     defer watcher.deinit();
     std.Thread.sleep(600 * std.time.ns_per_ms);
 
-    const accept_needles = [_][]const u8{ "CAP cert installed", "CAP cert install FAILED", "signature INVALID" };
-    const reject_needles = [_][]const u8{ "signature INVALID", "CAP cert installed", "CAP cert install FAILED" };
+    const accept_needles = [_][]const u8{ "CAP cert installed", "CAP cert install FAILED", "CAP cert REFUSED", "signature INVALID" };
+    const reject_needles = [_][]const u8{ "signature INVALID", "CAP cert installed", "CAP cert install FAILED", "CAP cert REFUSED" };
+    const domain_needles = [_][]const u8{ "CAP cert REFUSED", "CAP cert installed", "CAP cert install FAILED", "signature INVALID" };
 
     // ── 3. the board must accept it ──────────────────────────────────────────
     rule("2. Inject the cert - the board must accept and install it");
@@ -330,14 +331,52 @@ pub fn main() !void {
         }
     }
 
+    // ── 6. right key, right payload, WRONG DOMAIN ────────────────────────────
+    rule("5. Same cert in the WRONG domain - the board must refuse it");
+    {
+        // Everything about this cert is legitimate: the operator root signed
+        // it, the payload is byte-identical to the one just accepted, and the
+        // signature verifies. The ONLY difference is the domain flag in the
+        // cell header at bytes 24-27. If the board installs it, then
+        // OP_CHECKDOMAINFLAG is not being enforced and the namespace split is
+        // decoration.
+        const wrong = try cert.mintCell(
+            cert.typeHash(cert.capability_v0_type_name),
+            &payload,
+            anchor_bytes[0..16],
+            @intCast(std.time.milliTimestamp()),
+            domains.org_member,
+        );
+        const wrong_sig = try cert.signCell(operator_key, &wrong);
+        std.debug.print("  cert domain      0x{x:0>8}  ({s})\n", .{ domains.org_member, domains.name(domains.org_member) });
+        std.debug.print("  device domain    0x{x:0>8}  ({s})\n", .{ domains.fleet_device, domains.name(domains.fleet_device) });
+
+        const frame = try frameCell(a, &wrong, &wrong_sig);
+        defer a.free(frame);
+        try inject(inject_port, frame);
+        const line = try watcher.await_(&domain_needles, 12_000);
+        std.debug.print("  board said: {s}\n", .{line orelse "(nothing - timed out)"});
+        if (line != null and std.mem.indexOf(u8, line.?, "CAP cert REFUSED") != null) {
+            std.debug.print("  {s}REFUSED{s} - valid signature, valid authority, wrong namespace\n", .{ ansi_green, ansi_off });
+        } else if (line != null and std.mem.indexOf(u8, line.?, "CAP cert installed") != null) {
+            std.debug.print("  {s}INSTALLED{s} - the domain flag is NOT being enforced\n", .{ ansi_red, ansi_off });
+            failures += 1;
+        } else {
+            std.debug.print("  {s}UNEXPECTED{s} - refused, but not for the domain\n", .{ ansi_red, ansi_off });
+            failures += 1;
+        }
+    }
+
     rule("Result");
     if (failures == 0) {
         std.debug.print(
             "  A Zig-derived device identity was verified and installed by an\n" ++
-                "  ESP32-C6 over a real radio hop. A tampered copy was refused, and so\n" ++
-                "  was the same cert signed by the key the firmware used to trust.\n" ++
-                "  Derivation, certificate, signature and framing all came from this\n" ++
-                "  process. The board holds no private key.\n\n",
+                "  ESP32-C6 over a real radio hop. A tampered copy was refused, so\n" ++
+                "  was the same cert signed by the key the firmware used to trust,\n" ++
+                "  and so was a perfectly valid cert issued in the wrong domain -\n" ++
+                "  OP_CHECKDOMAINFLAG, enforced on the device rather than asserted\n" ++
+                "  off it. Derivation, certificate, signature and framing all came\n" ++
+                "  from this process. The board holds no private key.\n\n",
             .{},
         );
     } else {

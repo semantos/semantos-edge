@@ -64,6 +64,9 @@ comptime {
     _ = cell_capability.cm_cap_cert_hash;
     _ = cell_capability.cm_cap_evict_expired;
     _ = cell_capability.cm_cap_valid_count;
+    _ = cell_capability.cm_cap_set_domain;
+    _ = cell_capability.cm_cap_get_domain;
+    _ = cell_capability.cm_domain_flag_matches;
 
     _ = cell_rules.cm_rules_init;
     _ = cell_rules.cm_rules_install;

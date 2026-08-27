@@ -73,6 +73,21 @@ static const char *TAG = "mesh_demo";
 // block for whatever FLEET_ROOT_EMAIL / FLEET_ROOT_SALT you derive under.
 #define USE_FLEET_ANCHOR 1
 
+// The domain this device is provisioned into — `fleet.device` from
+// tools/fleet-zig/src/domains.zig, client-sovereign band.
+//
+// With this set, the device refuses a capability cert issued in any OTHER
+// domain even when the operator signature on it is perfectly valid: an
+// org.member cert (0x00f10002) is real authority, just not authority over a
+// device. Set it to CM_CAP_DOMAIN_ANY to install certs from every domain and
+// rely on the per-cert binding alone, which is what this firmware did before
+// the domain flag was written at all.
+//
+// Must stay below 0x80000000. The engine reads the expected flag as a BSV
+// script number, so bit 31 is a SIGN bit — see the encoding note in
+// components/cell-mesh/test/vectors/domainflag_vectors.h.
+#define DEVICE_DOMAIN_FLAG 0x00f10001u
+
 #if USE_FLEET_ANCHOR
 // Fleet operator trust anchor, derived not invented.
 //   universe: operator@fleet.example  (DEMO root — salt is in the repo)
@@ -767,6 +782,90 @@ static bool dispatch_scripted_cell(const char *mac_str,
     return accepted;
 }
 
+// ── OP_CHECKDOMAINFLAG self-test ─────────────────────────────────────────────
+//
+// The forward hot path gates on cm_domain_flag_matches, a u32 compare, because
+// running the engine per cell is not affordable next to a ~270 ms signature
+// verify. That is only legitimate if the compare IS the opcode. The host suite
+// proves that against a vector generated from this exact WASM blob; this proves
+// it again at boot, on the silicon, with the engine that is actually loaded.
+//
+// One-shot. Two executions. If it ever disagrees, the fast path is enforcing
+// something other than OP_CHECKDOMAINFLAG and the log says so loudly.
+
+/** Encode a u32 as a minimal BSV script number. Returns the byte count. */
+static size_t domain_script_num(uint32_t v, uint8_t out[5]) {
+    if (v == 0) return 0;                 // script-number zero is the empty push
+    size_t n = 0;
+    while (v > 0) { out[n++] = (uint8_t)(v & 0xffu); v >>= 8; }
+    // Bit 7 of the top byte is the SIGN. Pad, or the engine reads a negative.
+    if (out[n - 1] & 0x80u) out[n++] = 0x00u;
+    return n;
+}
+
+// Static, not stack: a 1024-byte cell plus pushes overflows the task stack.
+static uint8_t s_dft_script[CM_CELL_SIZE + 16];
+
+/** Run <cell(actual)> <expected> OP_CHECKDOMAINFLAG. true = engine accepted. */
+static bool domain_opcode_accepts(uint32_t actual, uint32_t expected, int *out_err) {
+    uint8_t *sp = s_dft_script;
+    uint8_t *cell = sp + 3;                       // after PUSHDATA2 + u16 len
+    *sp++ = 0x4d;                                 // OP_PUSHDATA2
+    *sp++ = (uint8_t)(CM_CELL_SIZE & 0xffu);
+    *sp++ = (uint8_t)((CM_CELL_SIZE >> 8) & 0xffu);
+    memset(cell, 0, CM_CELL_SIZE);
+    cm_cell_init(cell);                           // magic + version
+    cm_set_flags(cell, actual);                   // the field under test
+    sp += CM_CELL_SIZE;
+
+    uint8_t num[5];
+    size_t nlen = domain_script_num(expected, num);
+    *sp++ = (uint8_t)nlen;                        // direct push (nlen <= 5)
+    for (size_t i = 0; i < nlen; i++) *sp++ = num[i];
+    *sp++ = 0xC6;                                 // OP_CHECKDOMAINFLAG
+
+    semantos_kernel_reset(s_engine);
+    if (semantos_kernel_load_script(s_engine, s_dft_script,
+                                    (uint32_t)(sp - s_dft_script)) != SEMANTOS_OK) {
+        *out_err = -1;
+        return false;
+    }
+    int rc = semantos_kernel_execute(s_engine);
+    *out_err = rc;
+    return rc == SEMANTOS_OK;
+}
+
+static void domain_flag_selftest(void) {
+    if (!s_engine) {
+        ESP_LOGW(TAG, "OP_CHECKDOMAINFLAG selftest SKIPPED — no engine; the "
+                      "fast path is unverified on this boot");
+        return;
+    }
+    // A matching pair and a mismatching one. The mismatch is the load-bearing
+    // half: an opcode that accepted everything would pass the first alone.
+    const uint32_t mine  = DEVICE_DOMAIN_FLAG;
+    const uint32_t other = 0x00f10002u;   // org.member — a real, different domain
+
+    int err_match = 0, err_mismatch = 0;
+    bool engine_match    = domain_opcode_accepts(mine, mine,  &err_match);
+    bool engine_mismatch = domain_opcode_accepts(mine, other, &err_mismatch);
+
+    bool native_match    = cm_domain_flag_matches(mine, mine);
+    bool native_mismatch = cm_domain_flag_matches(mine, other);
+
+    if (engine_match == native_match && engine_mismatch == native_mismatch &&
+        engine_match && !engine_mismatch) {
+        ESP_LOGI(TAG, "OP_CHECKDOMAINFLAG selftest OK — engine and fast path agree "
+                      "(match=accept, mismatch=reject rc=%d)", err_mismatch);
+    } else {
+        ESP_LOGE(TAG, "OP_CHECKDOMAINFLAG selftest FAILED — engine(match=%d,mismatch=%d) "
+                      "native(match=%d,mismatch=%d) rc=(%d,%d). The forward gate is "
+                      "NOT enforcing the opcode's predicate.",
+                 (int)engine_match, (int)engine_mismatch,
+                 (int)native_match, (int)native_mismatch, err_match, err_mismatch);
+    }
+}
+
 // Forward declaration — emit_mnca_settle is defined after broadcast_telem.
 static void emit_mnca_settle(const cm_mnca_tile_t *t, const uint8_t tile_hash[32]);
 
@@ -920,16 +1019,22 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             const uint8_t *chid = (my_hop < CM_FORWARD_MAX_HOPS)
                                    ? fv1.hop_commitments[my_hop].channel_id
                                    : NULL;
+            // OP_CHECKDOMAINFLAG, in the fast path: the cell's declared domain
+            // (header bytes 24-27) is part of the lookup key, so authority
+            // issued for one domain cannot relay a cell from another. A
+            // mismatch is a miss, and the no-cert DROP below handles it.
+            const uint32_t cell_domain = cm_flags(cell);
             const uint8_t *edge_pk = chid
-                ? cm_cap_lookup(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_cap)
+                ? cm_cap_lookup(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_cap, cell_domain)
                 : NULL;
             if (!edge_pk) {
                 // No cert installed for this channel — DROP (BRC-115, no fallback).
                 ESP_LOGW(TAG, "RX [%s] forward.v1: no cert for channel "
-                         "%02x%02x%02x%02x — DROP",
+                         "%02x%02x%02x%02x domain=0x%08x — DROP",
                          mac_str,
                          chid ? chid[0] : 0, chid ? chid[1] : 0,
-                         chid ? chid[2] : 0, chid ? chid[3] : 0);
+                         chid ? chid[2] : 0, chid ? chid[3] : 0,
+                         (unsigned)cell_domain);
                 return;
             }
             if (cm_sig_verify(edge_pk, fwd_hash, sig) != 0) {
@@ -947,7 +1052,7 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             // or expired cert.
             const uint8_t *chid = fv1.hop_commitments[my_hop].channel_id;
             const uint8_t *stored_hash =
-                cm_cap_cert_hash(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_cap);
+                cm_cap_cert_hash(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_cap, cm_flags(cell));
             if (stored_hash &&
                 memcmp(stored_hash, fv1.hop_commitments[my_hop].cert_hash, 32) != 0) {
                 ESP_LOGW(TAG, "RX [%s] forward.v1: cert_hash mismatch hop=%u — DROP",
@@ -1145,8 +1250,13 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                                    ? pb.hop_commitments[my_hop].channel_id
                                    : NULL;
             uint64_t now_cap = (uint64_t)esp_log_timestamp();
+            // OP_CHECKDOMAINFLAG, in the fast path: the cell's declared domain
+            // (header bytes 24-27) is part of the lookup key, so authority
+            // issued for one domain cannot relay a cell from another. A
+            // mismatch is a miss, and the no-cert DROP below handles it.
+            const uint32_t cell_domain = cm_flags(cell);
             const uint8_t *edge_pk = chid
-                ? cm_cap_lookup(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_cap)
+                ? cm_cap_lookup(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_cap, cell_domain)
                 : NULL;
             if (!edge_pk) {
                 // No capability cert — DROP (same rule as forward.v1).
@@ -1178,7 +1288,7 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             uint64_t now_ms = (uint64_t)esp_log_timestamp();
             const uint8_t *chid = pb.hop_commitments[my_hop].channel_id;
             const uint8_t *stored_hash =
-                cm_cap_cert_hash(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_ms);
+                cm_cap_cert_hash(&s_cap_table, chid, CM_CAP_ROUTE_FWD_V1, now_ms, cm_flags(cell));
             if (stored_hash &&
                 memcmp(stored_hash, pb.hop_commitments[my_hop].cert_hash, 32) != 0) {
                 ESP_LOGW(TAG, "RX [%s] forward.v2: cert_hash mismatch hop=%u — DROP",
@@ -1438,16 +1548,28 @@ static void on_radio_recv(const uint8_t sender_mac[6],
     if (is_capability_v0) {
         const uint8_t *p  = cm_payload(cell);
         uint32_t       pt = cm_payload_total(cell);
+        // The domain is taken from the cert CELL's header, not the payload —
+        // the 66-byte payload has no spare room, and the cell header is
+        // covered by the operator signature verified above, so the recorded
+        // domain is authenticated rather than merely asserted.
+        const uint32_t cert_domain = cm_flags(cell);
         cm_cap_rc_t crc = cm_cap_install(&s_cap_table, p, (size_t)pt,
-                                          (uint64_t)esp_log_timestamp());
+                                          (uint64_t)esp_log_timestamp(),
+                                          cert_domain);
         if (crc == CM_CAP_OK) {
             // Payload layout: edge_pubkey[33] | channel_id[16] | expiry[8] | route[1]
             ESP_LOGI(TAG,
-                "CAP cert installed: ch=%02x%02x%02x%02x... edge=%02x%02x%02x%02x...",
+                "CAP cert installed: ch=%02x%02x%02x%02x... edge=%02x%02x%02x%02x... domain=0x%08x",
                 p[CM_CAP_OFF_CHANNEL_ID],   p[CM_CAP_OFF_CHANNEL_ID+1],
                 p[CM_CAP_OFF_CHANNEL_ID+2], p[CM_CAP_OFF_CHANNEL_ID+3],
                 p[CM_CAP_OFF_EDGE_PUBKEY],  p[CM_CAP_OFF_EDGE_PUBKEY+1],
-                p[CM_CAP_OFF_EDGE_PUBKEY+2],p[CM_CAP_OFF_EDGE_PUBKEY+3]);
+                p[CM_CAP_OFF_EDGE_PUBKEY+2],p[CM_CAP_OFF_EDGE_PUBKEY+3],
+                (unsigned)cert_domain);
+        } else if (crc == CM_CAP_ERR_WRONG_DOMAIN) {
+            // A cert the operator really did sign, for a domain this device is
+            // not in. Signature valid, authority valid, namespace wrong.
+            ESP_LOGW(TAG, "CAP cert REFUSED: wrong domain 0x%08x, this device is 0x%08x",
+                     (unsigned)cert_domain, (unsigned)cm_cap_get_domain(&s_cap_table));
         } else {
             ESP_LOGW(TAG, "CAP cert install FAILED: rc=%d", (int)crc);
         }
@@ -2692,6 +2814,10 @@ static void *mesh_demo_thread(void *arg) {
                    sizeof(CAPABILITY_V0_TYPE_NAME) - 1,
                    s_capability_v0_type_hash, 0);
     cm_cap_table_init(&s_cap_table);
+    cm_cap_set_domain(&s_cap_table, DEVICE_DOMAIN_FLAG);
+    ESP_LOGI(TAG, "cap table: device domain 0x%08x (OP_CHECKDOMAINFLAG enforced)",
+             (unsigned)DEVICE_DOMAIN_FLAG);
+    domain_flag_selftest();
     mbedtls_sha256((const unsigned char *)MNCA_TILE_V0_TYPE_NAME,
                    sizeof(MNCA_TILE_V0_TYPE_NAME) - 1,
                    s_mnca_tile_v0_type_hash, 0);
