@@ -34,6 +34,24 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // The mesh's own wire format, imported from the component the FIRMWARE
+    // builds against rather than re-declared here — so a layout change cannot
+    // leave the control plane behind.
+    const cell_wire_mod = b.addModule("cell_wire", .{
+        .root_source_file = b.path("../../components/cell-mesh-zig/src/cell_wire.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const cert_mod = b.addModule("cert", .{
+        .root_source_file = b.path("src/cert.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    cert_mod.addImport("bsvz", bsvz.module("bsvz"));
+    cert_mod.addImport("cell_wire", cell_wire_mod);
+    cert_mod.addImport("derive", derive_mod);
+
     // Conformance against the SDK's pinned golden vector. The vector is
     // embedded rather than read at runtime so the test cannot silently pass by
     // failing to find it.
@@ -48,6 +66,7 @@ pub fn build(b: *std.Build) void {
     conformance.root_module.addImport("certid", certid_mod);
     conformance.root_module.addImport("identity", identity_mod);
     conformance.root_module.addImport("store", store_mod);
+    conformance.root_module.addImport("cert", cert_mod);
     conformance.root_module.addAnonymousImport("golden", .{
         .root_source_file = b.path("vectors/cross-impl-derivation.golden.json"),
     });
@@ -56,6 +75,12 @@ pub fn build(b: *std.Build) void {
     });
     conformance.root_module.addAnonymousImport("golden_rotation", .{
         .root_source_file = b.path("vectors/rotation.golden.json"),
+    });
+    conformance.root_module.addAnonymousImport("golden_cert", .{
+        .root_source_file = b.path("vectors/cert.golden.json"),
+    });
+    conformance.root_module.addAnonymousImport("cap_header", .{
+        .root_source_file = b.path("../../components/cell-mesh/include/cell_capability.h"),
     });
 
     const run_conformance = b.addRunArtifact(conformance);

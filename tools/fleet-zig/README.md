@@ -3,10 +3,10 @@
 Plexus key derivation in Zig, on [bsvz](https://github.com/b-open-io/bsvz).
 
 ```bash
-zig build test --summary all     # 33 conformance tests against the SDK's oracle
+zig build test --summary all     # 39 conformance tests against the SDK's oracle
 ```
 
-**M1–M3 of the Zig control plane: derivation, certificate ids, and the store.** The port
+**M1–M4 of the Zig control plane: derivation, certificate ids, the store, and cert issuance.** The port
 reproduces the Plexus SDK byte-for-byte, checked against the SDK's own vectors
 rather than against expectations written here. From `(rootEmail, rootSalt)` alone
 it recomputes the root certificate id and every id in the vector's counter
@@ -41,9 +41,44 @@ private keys on device" structural rather than remembered.
 | `Store.burnSlot(...)` | rotation — consume without issuing, return the new mark |
 | `Store.restoreCounter(...)` | recovery restore; refuses to rewind |
 | `Store.putNode` / `getNode` / `children` | the provisioned fleet |
+| `cert.buildPayload(...)` | the 66 bytes `cm_cap_install` reads |
+| `cert.mintCell(...)` | the 1 KB cell the radio carries |
+| `cert.signCell` / `verifyCell` | raw r‖s, low-S, over a single SHA-256 |
 
 `plexus-kdf-v2` and `v3` are in the vector and deliberately not ported — v1 is
-what a fleet uses. The 66-byte cert encoding and signing are M4.
+what a fleet uses. M5 is hardware parity: the same three verdicts on the same
+two boards, driven by this plane instead of the TypeScript one.
+
+## "Byte-identical" holds for the cert, not the signature
+
+M4's stated gate was that a cert issued here is byte-identical to the TypeScript
+plane's. That holds for **the 66-byte payload and the 1 KB cell**, and tests
+assert exactly that.
+
+It does **not** hold for the signature, and cannot. Both planes are deterministic
+and neither uses randomness, but they derive the ECDSA nonce differently:
+`@bsv/sdk` runs its own HMAC-DRBG, bsvz delegates to Zig's
+`std.crypto.sign.ecdsa`. Same key, same digest, two different valid signatures —
+measured in `spike/src/sigcmp.zig`, not assumed.
+
+That is not a defect, because the nonce is not part of any contract. What is
+contractual is that the signature verifies against the operator key and is low-S,
+so the tests assert **interoperability in both directions**: Zig verifies what
+TypeScript signed, TypeScript's anchor verifies what Zig signed, and the two
+signatures are asserted to *differ* — so if a future toolchain quietly converges
+on one nonce scheme, the suite says so rather than passing on a stale assumption.
+
+**Low-S has to be applied deliberately.** bsvz returns whatever `std.crypto`
+produced, which is above half-n about half the time, while `@bsv/sdk` forces
+low-S by default. A high-S signature still verifies through mbedTLS on the
+device, so this would never have failed loudly — the two planes would simply have
+disagreed about what they emit. The test signs 24 cells, because one sample
+passes an unnormalised signer by luck.
+
+The cell layout is **not re-declared** here. It is imported from
+`components/cell-mesh-zig/src/cell_wire.zig` — the same file the firmware builds
+against — so a wire-format change cannot leave the control plane behind. The
+66-byte payload offsets are checked against `cell_capability.h` by parsing it.
 
 ## The store: one counter, not two
 
@@ -118,13 +153,20 @@ mutation-tested — each of these was applied and the suite caught it:
 | restore allowed to rewind | yes |
 | replay sets instead of raising | yes — *after* a test was added |
 | torn record accepted | yes — *after* a test was added |
+| drop low-S normalisation | yes |
+| payload root over the used prefix, not the full region | yes |
+| cert offsets, route type, linearity, owner-id length | yes |
+| expiry written big-endian | yes — *after* a test was added |
 
-Two of those rows say "after a test was added", and they are the honest part of
-this table. Both store mutations initially survived: `raise`-vs-`set` was
+Three of those rows say "after a test was added", and they are the honest part of
+this table. Two store mutations and one cert mutation initially survived: `raise`-vs-`set` was
 invisible because a log this store writes is always ordered, and the torn-record
-guard was only ever exercised by fragments that fail to parse. Neither gap was
-visible from reading the tests — only from breaking the code and watching them
-stay green.
+guard was only ever exercised by fragments that fail to parse. The third is the
+neatest: **expiry written big-endian was invisible because the only expiry in the
+vector was `UINT64_MAX`** — eight `0xff` bytes, which read identically either
+way. Fixed by generating a second cert with a real expiry whose every octet
+differs. None of the three was visible from reading the tests; only from breaking
+the code and watching them stay green.
 
 **The first run of that table is why the escaping vector exists.** Against the
 SDK's derivation vector alone, four of those escaping mutations passed

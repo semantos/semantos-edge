@@ -932,3 +932,208 @@ test "store: replay raises rather than sets, so record order cannot rewind a cou
     try std.testing.expectEqual(@as(u64, 7), try s.highWaterMark("p", "member", 6));
     try std.testing.expectEqual(@as(u64, 7), try s.allocateIndex("p", "member", 6));
 }
+
+// ── capability certificates ──────────────────────────────────────────────────
+
+const cert = @import("cert");
+const GOLDEN_CERT = @embedFile("golden_cert");
+const CAP_HEADER = @embedFile("cap_header");
+
+fn parseU64(s: []const u8) !u64 {
+    return std.fmt.parseInt(u64, s, 10);
+}
+
+test "cert: the 66-byte payload is byte-identical to the TypeScript plane's" {
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_CERT, .{});
+    defer parsed.deinit();
+    const v = parsed.value;
+
+    const edge = try hexToBytes(a, str(obj(v, "device"), "publicKeyHex"));
+    defer a.free(edge);
+    const chan = try hexToBytes(a, str(v, "channelIdHex"));
+    defer a.free(chan);
+
+    const got = try cert.buildPayload(
+        edge,
+        chan,
+        try parseU64(str(v, "expiryMs")),
+        try parseU64(str(v, "validFromMs")),
+    );
+    var got_hex: [cert.payload_bytes * 2]u8 = undefined;
+    _ = try std.fmt.bufPrint(&got_hex, "{x}", .{&got});
+    try std.testing.expectEqualStrings(str(v, "certPayloadHex"), &got_hex);
+
+    // And the BRC-108 binding hash over it.
+    var ch_hex: [64]u8 = undefined;
+    _ = try std.fmt.bufPrint(&ch_hex, "{x}", .{&cert.certHash(&got)});
+    try std.testing.expectEqualStrings(str(v, "certHashHex"), &ch_hex);
+}
+
+test "cert: the 1 KB cell is byte-identical to the TypeScript plane's" {
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_CERT, .{});
+    defer parsed.deinit();
+    const v = parsed.value;
+
+    const payload = try hexToBytes(a, str(v, "certPayloadHex"));
+    defer a.free(payload);
+    const anchor = try hexToBytes(a, str(v, "operatorPubKeyHex"));
+    defer a.free(anchor);
+
+    const cell = try cert.mintCell(
+        cert.typeHash(cert.capability_v0_type_name),
+        payload,
+        anchor[0..16],
+        try parseU64(str(v, "validFromMs")),
+    );
+    const got_hex = try a.alloc(u8, cert.cell_size * 2);
+    defer a.free(got_hex);
+    _ = try std.fmt.bufPrint(got_hex, "{x}", .{&cell});
+    try std.testing.expectEqualStrings(str(v, "certCellHex"), got_hex);
+}
+
+test "cert: signatures interoperate both ways, even though the bytes differ" {
+    // The honest form of M4's gate. Both planes are deterministic and neither
+    // uses randomness, but they derive the ECDSA nonce differently — so the
+    // signature bytes are NOT equal and cannot be. What must hold is that each
+    // side verifies the other's, which is the only property the wire depends on.
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_CERT, .{});
+    defer parsed.deinit();
+    const v = parsed.value;
+
+    const universe = obj(v, "universe");
+    const operator = try derive.derivePrivateKeyAtPath(
+        str(universe, "rootEmail"),
+        str(universe, "rootSalt"),
+        "root",
+    );
+    const anchor = try hexToBytes(a, str(v, "operatorPubKeyHex"));
+    defer a.free(anchor);
+    // The plane signs as the root, so the anchor must be the root's own key.
+    try std.testing.expectEqualStrings(str(v, "operatorPubKeyHex"), &(try derive.pubHex(operator)));
+
+    const cell = try hexToBytes(a, str(v, "certCellHex"));
+    defer a.free(cell);
+    const ts_sig_bytes = try hexToBytes(a, str(v, "certSigHex"));
+    defer a.free(ts_sig_bytes);
+    var ts_sig: [64]u8 = undefined;
+    @memcpy(&ts_sig, ts_sig_bytes);
+
+    // Zig verifies what TypeScript signed.
+    try std.testing.expect(try cert.verifyCell(anchor, cell, ts_sig));
+
+    // Zig's own signature over the same cell verifies too...
+    const zig_sig = try cert.signCell(operator, cell);
+    try std.testing.expect(try cert.verifyCell(anchor, cell, zig_sig));
+
+    // ...and is a DIFFERENT 64 bytes. Pinned so that if a future bsvz or Zig
+    // release happens to converge on the same nonce scheme, this test says so
+    // rather than silently passing on an assumption that stopped being true.
+    try std.testing.expect(!std.mem.eql(u8, &ts_sig, &zig_sig));
+}
+
+test "cert: signatures are low-S, which bsvz does not give for free" {
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_CERT, .{});
+    defer parsed.deinit();
+    const v = parsed.value;
+
+    const universe = obj(v, "universe");
+    const operator = try derive.derivePrivateKeyAtPath(
+        str(universe, "rootEmail"),
+        str(universe, "rootSalt"),
+        "root",
+    );
+    const half_n = [_]u8{
+        0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x5d, 0x57, 0x6e, 0x73, 0x57, 0xa4, 0x50, 0x1d, 0xdf, 0xe9, 0x2f, 0x46, 0x68, 0x1b, 0x20, 0xa0,
+    };
+
+    const anchor = try hexToBytes(a, str(v, "operatorPubKeyHex"));
+    defer a.free(anchor);
+
+    // Many cells, because bsvz's raw s is above half-n only about half the time
+    // — a single sample would pass on an unnormalised signer by luck.
+    var i: u64 = 0;
+    while (i < 24) : (i += 1) {
+        const cell = try cert.mintCell(
+            cert.typeHash(cert.capability_v0_type_name),
+            "payload",
+            "0123456789abcdef",
+            1_767_225_600_000 + i,
+        );
+        const sig = try cert.signCell(operator, &cell);
+        try std.testing.expect(std.mem.order(u8, sig[32..64], &half_n) != .gt);
+        // Normalising must not have broken it.
+        try std.testing.expect(try cert.verifyCell(anchor, &cell, sig));
+    }
+}
+
+test "cert: payload offsets track cell_capability.h" {
+    // The seam's other half. cert.zig mirrors these constants; this reads the
+    // firmware header and checks them, so a layout change fails here rather
+    // than on a board.
+    const constant = struct {
+        fn get(name: []const u8) !u64 {
+            var it = std.mem.tokenizeAny(u8, CAP_HEADER, "\n");
+            while (it.next()) |line| {
+                const t = std.mem.trim(u8, line, " \t\r");
+                if (!std.mem.startsWith(u8, t, "#define ")) continue;
+                var parts = std.mem.tokenizeAny(u8, t[8..], " \t");
+                const key = parts.next() orelse continue;
+                if (!std.mem.eql(u8, key, name)) continue;
+                var val = parts.next() orelse continue;
+                if (std.mem.endsWith(u8, val, "u")) val = val[0 .. val.len - 1];
+                if (std.mem.startsWith(u8, val, "0x")) return std.fmt.parseInt(u64, val[2..], 16);
+                return std.fmt.parseInt(u64, val, 10);
+            }
+            return error.NotFound;
+        }
+    };
+    try std.testing.expectEqual(@as(u64, cert.payload_bytes), try constant.get("CM_CAP_PAYLOAD_BYTES"));
+    try std.testing.expectEqual(@as(u64, cert.off_edge_pubkey), try constant.get("CM_CAP_OFF_EDGE_PUBKEY"));
+    try std.testing.expectEqual(@as(u64, cert.off_channel_id), try constant.get("CM_CAP_OFF_CHANNEL_ID"));
+    try std.testing.expectEqual(@as(u64, cert.off_expiry_ms), try constant.get("CM_CAP_OFF_EXPIRY_MS"));
+    try std.testing.expectEqual(@as(u64, cert.off_route_type), try constant.get("CM_CAP_OFF_ROUTE_TYPE"));
+    try std.testing.expectEqual(@as(u64, cert.off_valid_from_ms), try constant.get("CM_CAP_OFF_VALID_FROM_MS"));
+    try std.testing.expectEqual(@as(u64, cert.route_fwd_v1), try constant.get("CM_CAP_ROUTE_FWD_V1"));
+}
+
+test "cert: a real expiry pins the field's byte order" {
+    // The default no-expiry value is UINT64_MAX — eight 0xff bytes, identical in
+    // either endianness — so a vector carrying only that cannot catch a byte
+    // order mistake. This case has distinguishable bytes in every octet.
+    const a = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, GOLDEN_CERT, .{});
+    defer parsed.deinit();
+    const v = parsed.value;
+    const c = obj(v, "realExpiryCase");
+
+    const edge = try hexToBytes(a, str(c, "devicePublicKeyHex"));
+    defer a.free(edge);
+    const chan = try hexToBytes(a, str(c, "channelIdHex"));
+    defer a.free(chan);
+
+    const expiry = try parseU64(str(c, "expiryMs"));
+    try std.testing.expect(expiry != std.math.maxInt(u64)); // guard the guard
+
+    const got = try cert.buildPayload(edge, chan, expiry, try parseU64(str(v, "validFromMs")));
+    var got_hex: [cert.payload_bytes * 2]u8 = undefined;
+    _ = try std.fmt.bufPrint(&got_hex, "{x}", .{&got});
+    try std.testing.expectEqualStrings(str(c, "certPayloadHex"), &got_hex);
+
+    const anchor = try hexToBytes(a, str(v, "operatorPubKeyHex"));
+    defer a.free(anchor);
+    const cell = try cert.mintCell(
+        cert.typeHash(cert.capability_v0_type_name),
+        &got,
+        anchor[0..16],
+        try parseU64(str(v, "validFromMs")),
+    );
+    const cell_hex = try a.alloc(u8, cert.cell_size * 2);
+    defer a.free(cell_hex);
+    _ = try std.fmt.bufPrint(cell_hex, "{x}", .{&cell});
+    try std.testing.expectEqualStrings(str(c, "certCellHex"), cell_hex);
+}
