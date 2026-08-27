@@ -183,6 +183,73 @@ pub export fn cm_cap_cert_hash(
     return @ptrCast(&e.cert_hash);
 }
 
+/// Does this device hold ANY live relay grant on this route type and domain?
+///
+/// forward.v1 and v2 authorise per channel, because their cells name one.
+/// forward.v0 does not — its payload is flow_id, hops, segments and an inner
+/// payload, with no channel_id and no commitments anywhere. So a per-channel
+/// check is not available to it without a wire change.
+///
+/// What IS available is device-scoped: has the operator granted this device the
+/// right to relay at all, in this domain? That is strictly weaker than v1/v2's
+/// check and must not be described as equivalent — it says "this device is
+/// provisioned to relay", not "this device may relay THIS channel's traffic".
+/// It is still the difference between a provisioned relay and any board in
+/// radio range, which is the property v0 lacked entirely.
+pub export fn cm_cap_any_valid(
+    maybe_t: ?*const CapTable,
+    route_type: u8,
+    domain_flag: u32,
+    now_ms: u64,
+) callconv(.c) bool {
+    const t = maybe_t orelse return false;
+    for (&t.entries) |*e| {
+        if (!e.valid) continue;
+        if (e.expiry_ms != no_expiry and e.expiry_ms <= now_ms) continue;
+        if (e.route_type != route_type) continue;
+        if (!cm_domain_flag_matches(e.domain_flag, domain_flag)) continue;
+        return true;
+    }
+    return false;
+}
+
+test "cm_cap_any_valid: a device with no grant relays nothing" {
+    const testing = std.testing;
+    var t: CapTable = undefined;
+    cm_cap_table_init(&t);
+    try testing.expect(!cm_cap_any_valid(&t, route_fwd_v1, 0x00f10001, 0));
+}
+
+test "cm_cap_any_valid: route type and domain both have to match" {
+    const testing = std.testing;
+    var t: CapTable = undefined;
+    cm_cap_table_init(&t);
+    var payload: [payload_bytes]u8 = [_]u8{0} ** payload_bytes;
+    payload[0] = 0x02; // a plausible compressed pubkey prefix
+    wire.writeU64(payload[49..][0..8], no_expiry);
+    payload[57] = route_fwd_v1;
+    try testing.expectEqual(ok, cm_cap_install(&t, &payload, payload.len, 0, 0x00f10001));
+
+    try testing.expect(cm_cap_any_valid(&t, route_fwd_v1, 0x00f10001, 0));
+    // wrong domain — a grant in another namespace is not a grant here
+    try testing.expect(!cm_cap_any_valid(&t, route_fwd_v1, 0x00f10002, 0));
+    // wrong route type
+    try testing.expect(!cm_cap_any_valid(&t, 0x02, 0x00f10001, 0));
+}
+
+test "cm_cap_any_valid: an expired grant does not count" {
+    const testing = std.testing;
+    var t: CapTable = undefined;
+    cm_cap_table_init(&t);
+    var payload: [payload_bytes]u8 = [_]u8{0} ** payload_bytes;
+    payload[0] = 0x02;
+    wire.writeU64(payload[49..][0..8], 1000); // expires at 1000
+    payload[57] = route_fwd_v1;
+    try testing.expectEqual(ok, cm_cap_install(&t, &payload, payload.len, 0, 0x00f10001));
+    try testing.expect(cm_cap_any_valid(&t, route_fwd_v1, 0x00f10001, 999));
+    try testing.expect(!cm_cap_any_valid(&t, route_fwd_v1, 0x00f10001, 1000));
+}
+
 pub export fn cm_cap_evict_expired(maybe_t: ?*CapTable, now_ms: u64) callconv(.c) void {
     const t = maybe_t orelse return;
     for (&t.entries) |*e| {

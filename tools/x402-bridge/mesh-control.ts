@@ -322,18 +322,12 @@ function buildForwardV1Payload(
 //   48-319 hop_commitments[4][68] — same layout as v1 per-hop slots
 //   (320-767 unused)
 function buildForwardV2PayloadA(
-  flowId: Uint8Array,       // 16 bytes
+  flowId: Uint8Array,       // 16 bytes — the Cell B binding, see routingFlowId
   hopVerb: number,
   segmentCount: number,     // total_hops = segments_remaining at source
-  innerPayload: Uint8Array, // ≤712 bytes
-  routingDigest: Uint8Array,// SHA-256 of the whole 1024-byte Cell B
+  innerPayload: Uint8Array, // ≤744 bytes
 ): Uint8Array {
-  // 24 + 32. Cell A is signed and Cell B is not, and Cell B carries the route
-  // and the payment commitments — so Cell A commits to Cell B's exact bytes and
-  // the origin's signature covers the route transitively. Cell B must therefore
-  // be minted BEFORE Cell A.
-  const V2_HEADER = 56;
-  if (routingDigest.length !== 32) throw new Error('routingDigest must be 32 bytes');
+  const V2_HEADER = 24;
   const buf = new Uint8Array(V2_HEADER + innerPayload.length);
   buf.set(flowId.subarray(0, 16), 0);               // flow_id
   buf[16] = 0;                                       // hop_index
@@ -341,10 +335,25 @@ function buildForwardV2PayloadA(
   buf[18] = hopVerb;
   buf[19] = 0x01;                                    // CM_FWD_V2_FLAG_ROUTING_CONT
   writeU32LE(buf, 20, innerPayload.length);          // inner_payload_len
-  buf.set(routingDigest, 24);                        // routing_digest
   if (innerPayload.length > 0) buf.set(innerPayload, V2_HEADER);
   return buf;
 }
+
+/**
+ * The flow_id a Cell B payload must carry — mirrors cm_routing_cont_flow_id.
+ *
+ * Cell A is signed and Cell B is not, and Cell B holds the route and the
+ * payment claims. flow_id is already 16 bytes at offset 0 of both cells and
+ * already inside the signed Cell A, and the device already refuses a pair whose
+ * flow_ids differ. Defining it this way turns that existing check into the
+ * binding without spending a byte of wire.
+ *
+ * Hashed from offset 16 (past flow_id itself, or the definition is circular) to
+ * 320, which is exactly the range the device's decoder reads.
+ */
+const ROUTING_USED_BYTES = 320;
+const routingFlowId = (payloadB: Uint8Array): Uint8Array =>
+  sha256(payloadB.subarray(16, ROUTING_USED_BYTES)).subarray(0, 16);
 
 function buildForwardV2PayloadB(
   flowId: Uint8Array,       // 16 bytes — same as Cell A's flow_id
@@ -634,6 +643,14 @@ const server = Bun.serve({
           // EVAL_RULES: fire existing rules at each hop (inner_payload empty)
           desc = 'EVAL_RULES (blink wave)';
         }
+        // forward.v0 is now authorised as well as authenticated: a device
+        // refuses to relay unless it holds a live relay grant. Same auto-inject
+        // and same 3000 ms settle as the v1/v2 routes.
+        if (!s_capCertInjected) {
+          await injectCapabilityCert(s_currentChannelId, s_currentChannelIdHex, fwdInjectPort);
+          s_capCertInjected = true;
+          await sleep(3000);
+        }
         const fwdPayload = buildForwardPayload(hopVerb, [MAC_B, MAC_C], innerPayload);
         await inject(TYPES.forward, fwdPayload, fwdInjectPort);
         const via = fwdInjectPort.split('/').pop();
@@ -841,21 +858,21 @@ const server = Bun.serve({
         const flowId = sha256(seed).subarray(0, 16);
 
         // Build Cell A and Cell B payloads
-        // Cell B FIRST. Cell A commits to Cell B's exact bytes, so B must exist
-        // before A can be built — the route and the payment commitments live in
-        // B, and this is what puts them under A's signature.
         const relayKey    = getRelayKey(chHex);
         const relayWallet = new PrivateKey(Buffer.from(relayKey.sk).toString('hex'), 16);
         // Both on the relay rail — the same flag the capability cert carries,
         // or cm_cap_lookup misses and the device drops them.
+        //
+        // Cell B is built with a placeholder flow_id, then the real one is
+        // derived FROM its routing content and written back. The digest starts
+        // at offset 16, so writing flow_id into 0..16 afterwards cannot change
+        // it — that is what makes the definition non-circular.
         const payloadB = buildForwardV2PayloadB(flowId, [MAC_B, MAC_C], commitments);
+        const boundFlowId = routingFlowId(payloadB);
+        payloadB.set(boundFlowId, 0);
         const cellB    = mintCell(TYPES.routingContV0, payloadB, OWNER, BigInt(Date.now()), domainForType(TYPES.routingContV0));
 
-        // The device compares this against SHA-256 of the whole 1024-byte Cell B
-        // it receives, so hash the finished cell, not the payload.
-        const routingDigest = sha256(cellB);
-
-        const payloadA = buildForwardV2PayloadA(flowId, hopVerb, 2 /* B+C */, innerPayload, routingDigest);
+        const payloadA = buildForwardV2PayloadA(boundFlowId, hopVerb, 2 /* B+C */, innerPayload);
         const cellA    = mintCell(TYPES.forwardV2, payloadA, OWNER, BigInt(Date.now()), domainForType(TYPES.forwardV2));
         const sigA     = signCell(cellA, relayWallet);
         const sigB     = new Uint8Array(64);  // Cell B carries no signature of its own

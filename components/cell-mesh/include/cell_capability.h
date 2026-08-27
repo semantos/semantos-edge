@@ -219,6 +219,23 @@ const uint8_t *cm_cap_cert_hash(cm_cap_table_t *t,
  */
 void cm_cap_evict_expired(cm_cap_table_t *t, uint64_t now_ms);
 
+/**
+ * Does this device hold ANY live relay grant on this route type and domain?
+ *
+ * forward.v0 carries no channel_id and no commitments, so a per-channel
+ * capability check is not available to it without a wire change. This is the
+ * device-scoped alternative: has the operator granted this device the right to
+ * relay at all, in this domain?
+ *
+ * Strictly weaker than cm_cap_lookup and must not be described as equivalent —
+ * it says "provisioned to relay", not "may relay THIS channel". It is still the
+ * difference between a provisioned relay and any board in radio range.
+ */
+bool cm_cap_any_valid(const cm_cap_table_t *t,
+                      uint8_t               route_type,
+                      uint32_t              domain_flag,
+                      uint64_t              now_ms);
+
 /** Return the number of valid (non-expired) entries. */
 int cm_cap_valid_count(const cm_cap_table_t *t, uint64_t now_ms);
 

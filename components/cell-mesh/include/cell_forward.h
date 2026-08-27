@@ -113,6 +113,39 @@ typedef enum {
 // Caller re-encodes after a NEXT result and broadcasts the new cell.
 cm_forward_step_rc_t cm_forward_step(cm_forward_t *fwd, uint8_t out_next_mac[6]);
 
+
+// ── Route location ───────────────────────────────────────────────────────────
+//
+// Cells are relayed VERBATIM, so no hop cursor mutates in flight and a device
+// works out its own position rather than reading one. This is shared by
+// forward.v0, v1 and v2 — it was duplicated in the app once per version.
+
+#define CM_FWD_LOCATE_NOT_ON_ROUTE  (-1)
+#define CM_FWD_LOCATE_OUT_OF_ORDER  (-2)
+#define CM_FWD_LOCATE_BAD_ROUTE     (-3)
+#define CM_FWD_LOCATE_RELAY           0
+#define CM_FWD_LOCATE_DELIVER         1
+
+/**
+ * Find this device's hop on `segments`, and say whether to relay or deliver.
+ *
+ * `sender_mac` is load-bearing, not diagnostic: every board hears the origin's
+ * broadcast, so position alone would let the LAST hop act before the first had
+ * relayed. Hop 0 accepts from any sender; later hops only from segments[hop-1].
+ *
+ * An over-long, zero-length, or internally-empty route is REFUSED rather than
+ * clamped — clamping turns a malformed route into a different, shorter one.
+ *
+ * `out_hop` is set whenever this device is on the route, including when the
+ * cell is refused as out of order, so a caller can log which hop it was.
+ */
+int cm_forward_locate(const uint8_t (*segments)[6],
+                      uint8_t        total_hops,
+                      const uint8_t *my_mac,
+                      const uint8_t *sender_mac,
+                      uint8_t       *out_hop,
+                      uint8_t       *out_next_mac);
+
 #ifdef __cplusplus
 }
 #endif

@@ -26,7 +26,14 @@ const hex = (u8: Uint8Array): string => Buffer.from(u8).toString('hex');
 /** cell type name -> the rail that authorises it. */
 const RAIL: ReadonlyArray<readonly [string, number]> = [
   // Relay: the cert GRANTS, the forwards EXERCISE. One rail, by necessity.
+  //
+  // forward.v0 belongs here too. It was on the telemetry rail while it was the
+  // unauthenticated path — a label for something with no authority. It is now
+  // signature-verified and requires a relay grant, so putting it anywhere else
+  // means the grant it needs is looked up in a domain the cert was never issued
+  // for, and every v0 cell is refused for want of a capability that exists.
   ['cellmesh.capability.v0', DOMAIN.meshRelay],
+  ['cellmesh.forward.v0', DOMAIN.meshRelay],
   ['cellmesh.forward.v1', DOMAIN.meshRelay],
   ['cellmesh.forward.v2', DOMAIN.meshRelay],
   ['cellmesh.routing.cont.v0', DOMAIN.meshRelay],
@@ -49,12 +56,10 @@ const RAIL: ReadonlyArray<readonly [string, number]> = [
 
   // Telemetry: UNSIGNED. A namespace for schema purposes, NOT a boundary —
   // nothing covers an unsigned cell's header, so the flag is forgeable and a
-  // device must not treat it as authority. forward.v0 is here rather than on
-  // the relay rail because it is the pre-capability unsigned path.
+  // device must not treat it as authority.
   ['cellmesh.heartbeat.v0', DOMAIN.meshTelemetry],
   ['cellmesh.tap.v0', DOMAIN.meshTelemetry],
   ['cellmesh.telemetry.v0', DOMAIN.meshTelemetry],
-  ['cellmesh.forward.v0', DOMAIN.meshTelemetry],
   ['scada.event.v0', DOMAIN.meshTelemetry],
 ] as const;
 
@@ -93,7 +98,8 @@ export const domainForType = (typeHashBytes: Uint8Array): number => {
  */
 export const assertRelayRailConsistent = (): void => {
   const cert = domainForType(typeHash('cellmesh.capability.v0'));
-  for (const t of ['cellmesh.forward.v1', 'cellmesh.forward.v2', 'cellmesh.routing.cont.v0']) {
+  for (const t of ['cellmesh.forward.v0', 'cellmesh.forward.v1',
+                   'cellmesh.forward.v2', 'cellmesh.routing.cont.v0']) {
     const got = domainForType(typeHash(t));
     if (got !== cert) {
       throw new Error(

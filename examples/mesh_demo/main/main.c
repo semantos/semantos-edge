@@ -940,21 +940,22 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             return;
         }
         // ── Where am I on this path? ─────────────────────────────────────
-        // Same shape as forward.v1: the cell is relayed unchanged, so
-        // segments[] is the whole route and a device finds itself by position
-        // rather than reading a cursor a previous hop incremented.
-        uint8_t my_hop = 0xff;
+        // cm_forward_locate is in Zig (cell_forward.zig) and shared by v0/v1/v2.
+        // These rules — find yourself on an immutable route, accept only from
+        // your predecessor, refuse a malformed one — are protocol, not app, and
+        // were three copies of the same C here. One copy, host-tested.
+        uint8_t my_hop = 0xff, next_mac[6] = {0};
         uint8_t path_len = fwd.total_hops;
-        if (path_len > CM_FORWARD_MAX_HOPS) path_len = CM_FORWARD_MAX_HOPS;
-        for (uint8_t i = 0; i < path_len; i++) {
-            if (memcmp(fwd.segments[i], s_my_mac, 6) == 0) { my_hop = i; break; }
-        }
-        if (my_hop == 0xff) return;  // not on this route — drop silently
-        // Ordering: everyone hears the origin's broadcast, so a later hop must
-        // take the cell from its predecessor, not from the origin.
-        if (my_hop > 0 && memcmp(sender_mac, fwd.segments[my_hop - 1], 6) != 0) {
+        int loc = cm_forward_locate(fwd.segments, fwd.total_hops,
+                                    s_my_mac, sender_mac, &my_hop, next_mac);
+        if (loc == CM_FWD_LOCATE_BAD_ROUTE) {
+            ESP_LOGW(TAG, "RX [%s] forward: malformed route (total_hops=%u) — DROP",
+                     mac_str, (unsigned)path_len);
             return;
         }
+        if (loc < 0) return;  // not on this route, or not from my predecessor
+        cm_forward_step_rc_t rc = (loc == CM_FWD_LOCATE_RELAY)
+                                ? CM_FWD_NEXT : CM_FWD_DELIVERED;
 
         // ── Authenticate. ────────────────────────────────────────────────
         //
@@ -983,13 +984,24 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             }
         }
 
-        uint8_t next_mac[6] = {0};
-        cm_forward_step_rc_t rc;
-        if (my_hop + 1 < path_len) {
-            memcpy(next_mac, fwd.segments[my_hop + 1], 6);
-            rc = CM_FWD_NEXT;
-        } else {
-            rc = CM_FWD_DELIVERED;
+        // ── Authorise. ───────────────────────────────────────────────────
+        //
+        // The signature above says the operator sent this. It does not say this
+        // device was ever granted the right to relay. v1 and v2 answer that per
+        // channel via cm_cap_lookup; v0 cannot, because its payload carries no
+        // channel_id and no commitments — there is nothing to key on without a
+        // wire change.
+        //
+        // So the check here is DEVICE-scoped, and weaker on purpose: does this
+        // board hold a live relay grant in this domain at all? That is the
+        // difference between a provisioned relay and any board in radio range.
+        // It is not the same guarantee v1 and v2 get, and should not be read as
+        // one.
+        if (!cm_cap_any_valid(&s_cap_table, CM_CAP_ROUTE_FWD_V1,
+                              cm_flags(cell), (uint64_t)esp_log_timestamp())) {
+            ESP_LOGW(TAG, "RX [%s] forward: no relay grant for domain 0x%08x — DROP",
+                     mac_str, (unsigned)cm_flags(cell));
+            return;
         }
 
         // ── Apply hop_verb side-effect (relay hops AND destination) ──────
@@ -1080,28 +1092,22 @@ static void on_radio_recv(const uint8_t sender_mac[6],
             return;
         }
         // ── Where am I on this path? ─────────────────────────────────────
-        //
-        // The cell is relayed UNCHANGED, so segments[] is the whole route as
-        // the origin signed it and no hop cursor is mutated in flight. A device
-        // finds itself by position instead of reading a counter someone else
-        // incremented — which is what lets the origin's signature verify at
-        // every hop rather than only the first.
-        uint8_t my_hop = 0xff;
+        // cm_forward_locate is in Zig (cell_forward.zig) and shared by v0/v1/v2.
+        // These rules — find yourself on an immutable route, accept only from
+        // your predecessor, refuse a malformed one — are protocol, not app, and
+        // were three copies of the same C here. One copy, host-tested.
+        uint8_t my_hop = 0xff, next_mac[6] = {0};
         uint8_t path_len = fv1.total_hops;
-        if (path_len > CM_FORWARD_MAX_HOPS) path_len = CM_FORWARD_MAX_HOPS;
-        for (uint8_t i = 0; i < path_len; i++) {
-            if (memcmp(fv1.segments[i], s_my_mac, 6) == 0) { my_hop = i; break; }
+        int loc = cm_forward_locate(fv1.segments, fv1.total_hops,
+                                    s_my_mac, sender_mac, &my_hop, next_mac);
+        if (loc == CM_FWD_LOCATE_BAD_ROUTE) {
+            ESP_LOGW(TAG, "RX [%s] forward.v1: malformed route (total_hops=%u) — DROP",
+                     mac_str, (unsigned)path_len);
+            return;
         }
-        if (my_hop == 0xff) return;  // not on this route — drop silently
-
-        // Ordering. Everyone in range hears the origin's broadcast, so without
-        // this the LAST hop would accept before the first had relayed, and the
-        // path would be a suggestion. Hop 0 takes it from the origin; every
-        // later hop takes it only from its immediate predecessor, which is the
-        // device the previous hop unicast to it.
-        if (my_hop > 0 && memcmp(sender_mac, fv1.segments[my_hop - 1], 6) != 0) {
-            return;  // out of order — not from my predecessor
-        }
+        if (loc < 0) return;  // not on this route, or not from my predecessor
+        cm_forward_step_rc_t rc = (loc == CM_FWD_LOCATE_RELAY)
+                                ? CM_FWD_NEXT : CM_FWD_DELIVERED;
         // ── Capability check: sig must come from a certified relay key ──
         uint64_t now_cap = (uint64_t)esp_log_timestamp();
         {
@@ -1192,21 +1198,7 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                      fv1.hop_commitments[my_hop].cert_hash[2],
                      fv1.hop_commitments[my_hop].cert_hash[3]);
         }
-        // ── Step + hop_verb (same as v0) ─────────────────────────────────
-        uint8_t next_mac[6] = {0};
-        // Position decides, not a carried counter. cm_forward_v1_step exists to
-        // mutate the route in place — decrement segments_remaining, bump
-        // hop_index — and that mutation is exactly what a byte-identical relay
-        // must not do. So the same decision is made from where we sit on an
-        // immutable path: someone after me, or am I the end of it?
-        cm_forward_step_rc_t rc;
-        if (my_hop + 1 < path_len) {
-            memcpy(next_mac, fv1.segments[my_hop + 1], 6);
-            rc = CM_FWD_NEXT;
-        } else {
-            memset(next_mac, 0, 6);
-            rc = CM_FWD_DELIVERED;
-        }
+        // ── hop_verb (same as v0) ────────────────────────────────────────
         // Reuse v0 hop_verb dispatch (EVAL_RULES / INSTALL_RULE identical).
         if (fv1.hop_verb == CM_HOP_VERB_EVAL_RULES) {
             cm_effect_t hop_effects[CM_RULES_MAX];
@@ -1343,23 +1335,22 @@ static void on_radio_recv(const uint8_t sender_mac[6],
         // Only consume (valid=false) once we confirm this Cell B is for us.
 
         // ── Where am I on this path? ─────────────────────────────────────
-        // Both cells are relayed unchanged, so segments[] is the whole route
-        // and hop_index stays as the origin set it. A device finds itself by
-        // position — which is what lets Cell A's signature verify at every hop
-        // instead of only the first.
-        uint8_t my_hop = 0xff;
+        // cm_forward_locate is in Zig (cell_forward.zig) and shared by v0/v1/v2.
+        // These rules — find yourself on an immutable route, accept only from
+        // your predecessor, refuse a malformed one — are protocol, not app, and
+        // were three copies of the same C here. One copy, host-tested.
+        uint8_t my_hop = 0xff, next_mac[6] = {0};
         uint8_t path_len = pa.total_hops;
-        if (path_len > CM_FORWARD_MAX_HOPS) path_len = CM_FORWARD_MAX_HOPS;
-        for (uint8_t i = 0; i < path_len; i++) {
-            if (memcmp(pb.segments[i], s_my_mac, 6) == 0) { my_hop = i; break; }
-        }
-        if (my_hop == 0xff) return;  // not on this route — keep the burst slot
-        // Ordering: hop 0 takes it from the origin, later hops only from their
-        // predecessor. Without this the last hop accepts the origin's broadcast
-        // first and the route is decorative.
-        if (my_hop > 0 && memcmp(sender_mac, pb.segments[my_hop - 1], 6) != 0) {
+        int loc = cm_forward_locate(pb.segments, pa.total_hops,
+                                    s_my_mac, sender_mac, &my_hop, next_mac);
+        if (loc == CM_FWD_LOCATE_BAD_ROUTE) {
+            ESP_LOGW(TAG, "RX [%s] forward.v2: malformed route (total_hops=%u) — DROP",
+                     mac_str, (unsigned)path_len);
             return;
         }
+        if (loc < 0) return;  // not on this route, or not from my predecessor
+        cm_forward_step_rc_t rc = (loc == CM_FWD_LOCATE_RELAY)
+                                ? CM_FWD_NEXT : CM_FWD_DELIVERED;
         s_fwdv2_burst.valid = false;  // consume the slot now that we own this hop
 
         // ── Bind Cell B to Cell A. ───────────────────────────────────────
@@ -1370,17 +1361,18 @@ static void on_radio_recv(const uint8_t sender_mac[6],
         // origin's — anyone could have supplied the route it travelled and
         // the shares claimed along it.
         //
-        // Cell A now carries SHA-256 of the whole Cell B, so the route is
-        // under the origin's signature transitively. Checked BEFORE the
-        // signature verify below only because it is 100x cheaper; the
-        // signature is what makes the digest mean anything, and a forged pair
-        // fails there regardless.
+        // The binding costs no wire space: flow_id is already 16 bytes at
+        // offset 0 of both cells and already inside the SIGNED Cell A. Defining
+        // it as a digest of Cell B's routing content makes the pairing check
+        // above into a real binding — alter a segment or a device_share and the
+        // flow_id no longer matches, and the attacker cannot correct it because
+        // flow_id lives in the cell they cannot forge.
         {
-            uint8_t b_hash[32];
-            cm_sig_hash_cell(cell, b_hash);
-            if (memcmp(b_hash, s_fwdv2_burst.primary.routing_digest, 32) != 0) {
+            uint8_t want_flow[16];
+            if (cm_routing_cont_flow_id(payload, (size_t)payload_tot, want_flow) != 0 ||
+                memcmp(want_flow, s_fwdv2_burst.primary.flow_id, 16) != 0) {
                 ESP_LOGW(TAG, "RX [%s] forward.v2: Cell B does not match Cell A's "
-                         "routing_digest — DROP", mac_str);
+                         "flow_id binding — DROP", mac_str);
                 return;
             }
         }
@@ -1463,16 +1455,6 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                      mac_str, (unsigned)my_hop,
                      (unsigned)s_fwd_channel.current_seq,
                      (unsigned)s_fwd_channel.device_share);
-        }
-
-        // ── Relay or deliver, by position on an immutable path ────────────
-        uint8_t next_mac[6] = {0};
-        cm_forward_step_rc_t rc;
-        if (my_hop + 1 < path_len) {
-            memcpy(next_mac, pb.segments[my_hop + 1], 6);
-            rc = CM_FWD_NEXT;
-        } else {
-            rc = CM_FWD_DELIVERED;
         }
 
         if (rc == CM_FWD_DELIVERED) {
@@ -2028,9 +2010,10 @@ static void broadcast_forward_route(void) {
 
     uint8_t cell[CM_CELL_SIZE], sig[CM_FRAME_SIG_SIZE];
     // Originating, not relaying — this device is the source, so it declares
-    // the rail itself. forward.v0 is unsigned, so the flag is a namespace
-    // label here rather than an authority claim.
-    if (build_forward_cell(CM_DOMAIN_MESH_TELEMETRY, &fwd, cell, sig) != 0) {
+    // the rail itself. forward.v0 is on the RELAY rail: receivers now look up a
+    // relay grant in the cell's own domain, so a v0 minted anywhere else would
+    // be refused for want of a capability that exists on another rail.
+    if (build_forward_cell(CM_DOMAIN_MESH_RELAY, &fwd, cell, sig) != 0) {
         ESP_LOGE(TAG, "forward: build_forward_cell failed");
         return;
     }

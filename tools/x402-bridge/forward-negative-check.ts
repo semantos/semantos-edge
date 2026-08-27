@@ -64,15 +64,18 @@ const buildCellB = (flowId: Uint8Array): Uint8Array => {
   return buf;
 };
 
-/** forward.v2 Cell A: 56-byte header, digest at 24. */
-const buildCellA = (flowId: Uint8Array, digest: Uint8Array): Uint8Array => {
-  const buf = new Uint8Array(56);
+/** forward.v2 Cell A: 24-byte header. The binding rides in flow_id. */
+const buildCellA = (flowId: Uint8Array): Uint8Array => {
+  const buf = new Uint8Array(24);
   buf.set(flowId, 0);
   buf[16] = 0; buf[17] = 2; buf[18] = 0; buf[19] = 0x01;
   writeU32LE(buf, 20, 0);
-  buf.set(digest, 24);
   return buf;
 };
+
+/** Mirrors cm_routing_cont_flow_id: sha256(payloadB[16..320])[0..16]. */
+const routingFlowId = (payloadB: Uint8Array): Uint8Array =>
+  sha256(payloadB.subarray(16, 320)).subarray(0, 16);
 
 for (const p of [INJECT, WATCH]) {
   execFileSync('stty', ['-f', p, 'raw', '-echo', '115200', 'clocal', 'cread']);
@@ -131,16 +134,18 @@ let failures = 0;
 
 // ── 2. forward.v2 with Cell B tampered after Cell A committed to it ─────────
 {
-  const flowId = sha256(new Uint8Array([9, 9, 9])).subarray(0, 16);
-  const payloadB = buildCellB(flowId);
+  // Build Cell B, derive its flow_id from its OWN routing content, write it
+  // back, and let Cell A carry that flow_id. Exactly what the bridge does.
+  const payloadB = buildCellB(new Uint8Array(16));
+  payloadB.set(routingFlowId(payloadB), 0);
   const cellB = mintCell(T_ROUTING, payloadB, OWNER, BigInt(Date.now()), domainForType(T_ROUTING));
-  const payloadA = buildCellA(flowId, sha256(cellB));
+  const payloadA = buildCellA(payloadB.subarray(0, 16));
   const cellA = mintCell(T_FWD_V2, payloadA, OWNER, BigInt(Date.now()), domainForType(T_FWD_V2));
   const sigA = (() => { const x = signer.key.sign(Array.from(cellA));
     return new Uint8Array([...x.r.toArray('be', 32), ...x.s.toArray('be', 32)]); })();
 
-  // Raise hop 0's claimed device_share from 10 to 9999, AFTER Cell A committed
-  // to the original bytes. This is the attack the digest exists to stop.
+  // Raise hop 0's claimed device_share from 10 to 9999. The attacker cannot
+  // repair flow_id to match: it is inside Cell A, which is signed.
   const tampered = new Uint8Array(cellB);
   writeU32LE(tampered, 256 + 48 + 20, 9999);
 
@@ -150,14 +155,41 @@ let failures = 0;
       await new Promise((r) => setTimeout(r, 2500));   // clear the 1800ms staging window
       await send(tampered, new Uint8Array(64));
     }, 7000);
-  if (out.includes("does not match Cell A's routing_digest")) {
-    console.log('  REFUSED — the route and the payment claims are under Cell A\'s signature');
+  if (out.includes("does not match Cell A's flow_id binding")) {
+    console.log('  REFUSED — the route and the payment claims ride under Cell A\'s signature');
   } else if (/forward\.v2: CAP-verified|FORWARD\.V2 DELIVERED/.test(out)) {
-    console.log('  ACCEPTED — the digest binding is not working'); failures++;
+    console.log('  ACCEPTED — the flow_id binding is not working'); failures++;
+  } else { console.log('  no verdict (nothing logged)'); failures++; }
+}
+
+// ── 3. forward.v0 from the RIGHT key, to a device with no relay grant ───────
+{
+  // Reset board B so its capability table is empty — the state an
+  // unprovisioned board is in. Then send a perfectly valid, correctly-signed
+  // forward.v0. Authenticated is not authorised.
+  console.log('\n3. forward.v0, correctly signed, to a board with NO relay grant — must be REFUSED');
+  console.log('   (resetting the watch board to clear its capability table…)');
+  execFileSync('python3', ['-c', `
+import serial,time
+p=serial.Serial('${WATCH}',115200,timeout=1)
+p.setDTR(False); p.setRTS(True); time.sleep(0.1); p.setRTS(False); p.close()`]);
+  await new Promise((r) => setTimeout(r, 20000));  // boot ECDSA bench
+  execFileSync('stty', ['-f', WATCH, 'raw', '-echo', '115200', 'clocal', 'cread']);
+
+  const payload = buildV0Payload(2);
+  const cell = mintCell(T_FWD_V0, payload, OWNER, BigInt(Date.now()), domainForType(T_FWD_V0));
+  const x = signer.key.sign(Array.from(cell));
+  const sig = new Uint8Array([...x.r.toArray('be', 32), ...x.s.toArray('be', 32)]);
+
+  const out = await watch('   injecting…', () => send(cell, sig), 6000);
+  if (out.includes('no relay grant')) {
+    console.log('  REFUSED — the operator signed it, but this board was never granted relay');
+  } else if (/forward → relay|FORWARD DELIVERED|INSTALL_RULE: queued/.test(out)) {
+    console.log('  ACTED ON IT — the capability gate is not working'); failures++;
   } else { console.log('  no verdict (nothing logged)'); failures++; }
 }
 
 console.log(failures === 0
-  ? '\nBoth gates refuse what they are meant to refuse.'
+  ? '\nAll three gates refuse what they are meant to refuse.'
   : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

@@ -17,8 +17,10 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    // root.zig, not cell_wire.zig: rooting the test binary at one module meant
+    // only that module's tests ever ran. See the test block in root.zig.
     const test_mod = b.createModule(.{
-        .root_source_file = b.path("src/cell_wire.zig"),
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
