@@ -53,15 +53,25 @@ const buildV0Payload = (hopVerb: number): Uint8Array => {
 };
 
 /** forward.v2 Cell B: routing + commitments. Mirrors buildForwardV2PayloadB. */
-const buildCellB = (flowId: Uint8Array): Uint8Array => {
+const buildCellB = (flowId: Uint8Array, certHash?: Uint8Array, seq = 1): Uint8Array => {
   const buf = new Uint8Array(320);
   buf.set(flowId, 0);
   buf[16] = 0; buf[17] = 2;
   buf.set(MAC_B, 24); buf.set(MAC_C, 30);
   for (let i = 0; i < 2; i++) {
+    // 68-byte slot: channel_id(16) seq(4) device_share(4) user_share(4)
+    // expiry(8) cert_hash(32).
     const off = 48 + i * 68;
-    writeU32LE(buf, off + 16, 1);         // seq
+    writeU32LE(buf, off + 16, seq);
     writeU32LE(buf, off + 20, 10);        // device_share
+    // expiry_ms at +28. Leaving it zero means "already expired" and the
+    // channel machine returns err_expired (-6) — which surfaces as a
+    // CHANNEL REJECT long before the check under test is reached.
+    for (let k = 0; k < 8; k++) buf[off + 28 + k] = k === 7 ? 0x7f : 0xff;
+    // The BRC-108 binding. Leaving it zeroed makes every case fail at the
+    // cert_hash check instead of where it is aimed — which is exactly what
+    // silently broke case 3.
+    if (certHash) buf.set(certHash.subarray(0, 32), off + 36);
   }
   return buf;
 };
@@ -141,6 +151,20 @@ let failures = 0;
 
 // ── 1. forward.v0 signed by the wrong key ───────────────────────────────────
 {
+  // A cert first. v0's grant check runs BEFORE the signature, so on a board
+  // left reset by case 4 of a previous run this case would report "no relay
+  // grant" and never reach the gate it is aiming at. That ordering dependency
+  // is new — it arrived with the v0 capability gate — and it made this case
+  // pass or fail depending on what ran before it.
+  {
+    const relay0 = deriveChannelRelayKey(signer.key, '00'.repeat(16));
+    const { cell: c0, sig: s0 } = buildCapabilityCertCell(
+      new Uint8Array(16), relay0, signer.key, 0xffffffffffffffffn, BigInt(Date.now()),
+    );
+    await send(c0, s0);
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+
   const payload = buildV0Payload(2);  // INSTALL_RULE — the dangerous verb
   const cell = mintCell(T_FWD_V0, payload, OWNER, BigInt(Date.now()), domainForType(T_FWD_V0));
   const wrong = resolveSigner({ MESH_SIGNER: 'legacy' } as NodeJS.ProcessEnv).key;
@@ -202,15 +226,27 @@ let failures = 0;
   // first, or this fails with "no cert" for a reason that has nothing to do
   // with what is being tested.
   const relay = deriveChannelRelayKey(signer.key, '00'.repeat(16));
-  {
-    const { cell: certCell, sig: certSig } = buildCapabilityCertCell(
-      new Uint8Array(16), relay, signer.key, 0xffffffffffffffffn, BigInt(Date.now()),
-    );
-    await send(certCell, certSig);
-    await new Promise((r) => setTimeout(r, 3000));   // one cell per second, roughly
-  }
+  const { cell: certCell, sig: certSig, payloadHash } = buildCapabilityCertCell(
+    new Uint8Array(16), relay, signer.key, 0xffffffffffffffffn, BigInt(Date.now()),
+  );
+  await send(certCell, certSig);
+  await new Promise((r) => setTimeout(r, 3000));   // one cell per second, roughly
 
-  const payloadB = buildCellB(new Uint8Array(16));
+  // Three fixture details that each silently sank this case before, none of
+  // them anything to do with what it tests. The board answered CHANNEL REJECT
+  // or cert_hash mismatch, the harness only looked for CAP-verified, and every
+  // one of them read as "nothing logged".
+  //
+  //   cert_hash  zeroed  -> cert_hash mismatch
+  //   expiry_ms  zeroed  -> err_expired (-6)
+  //   seq        fixed   -> err_stale_seq (-3) on the SECOND run, because the
+  //                         board's channel persists across bridge processes
+  //                         while the bridge's counter does not
+  //
+  // So the seq comes from the clock: monotonic across runs, and far enough
+  // ahead that nothing this harness did earlier can have claimed it.
+  const freshSeq = Math.floor(Date.now() / 1000) % 1_000_000;
+  const payloadB = buildCellB(new Uint8Array(16), payloadHash, freshSeq);
   payloadB.set(routingFlowId(payloadB), 0);
   const cellB = mintCell(T_ROUTING, payloadB, OWNER, BigInt(Date.now()), DOMAIN.orgMember);
   const payloadA = buildCellA(payloadB.subarray(0, 16));
