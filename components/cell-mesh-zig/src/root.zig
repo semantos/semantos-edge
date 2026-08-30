@@ -5,6 +5,7 @@ pub const cell_channel = @import("cell_channel.zig");
 pub const cell_forward = @import("cell_forward.zig");
 pub const cell_forward_v1 = @import("cell_forward_v1.zig");
 pub const cell_forward_v2 = @import("cell_forward_v2.zig");
+pub const cell_forward_admit = @import("cell_forward_admit.zig");
 pub const cell_frame = @import("cell_frame.zig");
 pub const cell_capability = @import("cell_capability.zig");
 pub const cell_rules = @import("cell_rules.zig");
@@ -24,6 +25,7 @@ test {
     _ = @import("cell_forward.zig");
     _ = @import("cell_forward_v1.zig");
     _ = @import("cell_forward_v2.zig");
+    _ = @import("cell_forward_admit.zig");
     _ = @import("cell_frame.zig");
     _ = @import("cell_capability.zig");
     _ = @import("cell_rules.zig");
@@ -75,6 +77,10 @@ comptime {
     _ = cell_forward_v2.cm_routing_cont_decode;
     _ = cell_forward_v2.cm_forward_v2_step;
     _ = cell_forward_v2.cm_routing_cont_flow_id;
+
+    _ = cell_forward_admit.cm_forward_v0_admit;
+    _ = cell_forward_admit.cm_forward_v1_admit;
+    _ = cell_forward_admit.cm_forward_v2_admit;
 
     _ = cell_frame.cm_frame_split;
     _ = cell_frame.cm_reasm_init;

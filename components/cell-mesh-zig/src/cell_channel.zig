@@ -1,12 +1,12 @@
 const std = @import("std");
 const wire = @import("cell_wire.zig");
 
-const state_closed: c_int = 0;
-const state_open: c_int = 1;
-const state_active: c_int = 2;
-const state_expired: c_int = 3;
+pub const state_closed: c_int = 0;
+pub const state_open: c_int = 1;
+pub const state_active: c_int = 2;
+pub const state_expired: c_int = 3;
 
-const ok: c_int = 0;
+pub const ok: c_int = 0;
 const err_bad_state: c_int = -1;
 const err_bad_id: c_int = -2;
 const err_stale_seq: c_int = -3;
