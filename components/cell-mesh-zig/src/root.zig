@@ -81,6 +81,7 @@ comptime {
     _ = cell_forward_admit.cm_forward_v0_admit;
     _ = cell_forward_admit.cm_forward_v1_admit;
     _ = cell_forward_admit.cm_forward_v2_admit;
+    _ = cell_forward_admit.cm_admit_consumes_burst_slot;
 
     _ = cell_frame.cm_frame_split;
     _ = cell_frame.cm_reasm_init;

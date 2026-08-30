@@ -1269,27 +1269,11 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                                       &s_cap_table, &s_fwd_channel,
                                       (uint64_t)esp_log_timestamp(),
                                       cm_sig_verify, &adm);
-        // Consume the burst slot only once this Cell B has PROVEN it is the
-        // origin's partner for the Cell A we are holding.
-        //
-        // This is narrower than "anything but IGNORE", and the difference is a
-        // remote denial of service. Cell B is unsigned and flow_id is a public
-        // function of routing content, so the pairing check above — flow_id
-        // equality — is passable by anyone who copies an in-flight flow_id. If
-        // such a cell consumed the slot, an observer could destroy a legitimate
-        // buffered Cell A at will by sending a malformed route or mismatched
-        // routing content.
-        //
-        // BAD_ROUTE and FLOW_BINDING both mean "this is not our partner cell",
-        // so the real one must still be able to arrive. Every other refusal is
-        // reached only AFTER the binding proved the pair genuine, and a genuine
-        // pair that fails will fail again — holding the slot for it buys
-        // nothing.
-        if (loc != CM_ADMIT_IGNORE &&
-            loc != CM_ADMIT_BAD_ROUTE &&
-            loc != CM_ADMIT_FLOW_BINDING) {
-            s_fwdv2_burst.valid = false;
-        }
+        // The rule itself is cm_admit_consumes_burst_slot in
+        // cell_forward_admit.zig, where it is unit-tested. It used to be an
+        // inline condition here, which is why the denial-of-service it encodes
+        // shipped with no test at all.
+        if (cm_admit_consumes_burst_slot(loc)) s_fwdv2_burst.valid = false;
         switch (loc) {
             case CM_ADMIT_IGNORE:    return;
             case CM_ADMIT_BAD_ROUTE:

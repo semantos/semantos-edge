@@ -74,6 +74,29 @@ pub const Admit = extern struct {
     channel_rc: c_int,
 };
 
+/// May the v2 burst slot be released, given this verdict?
+///
+/// This rule was left in C, which is why the bug it encodes shipped untested.
+/// It is protocol: it decides whether a victim's buffered Cell A survives an
+/// attacker's Cell B.
+///
+/// Cell B carries no signature, and flow_id is a public function of routing
+/// content — so the pairing check that guards this path is passable by anyone
+/// who copies an in-flight flow_id off the air. If such a cell released the
+/// slot, an observer could destroy a legitimate buffered Cell A at will.
+///
+/// So the slot is released only once the binding has PROVEN this Cell B is the
+/// origin's partner for the Cell A being held. `bad_route` and `flow_binding`
+/// both mean "not our partner cell", and the real one must still be able to
+/// arrive. Every other refusal is reached only after the binding passed, and a
+/// genuine pair that fails will fail again — holding the slot buys nothing.
+pub export fn cm_admit_consumes_burst_slot(verdict: c_int) callconv(.c) bool {
+    return switch (verdict) {
+        admit_ignore, admit_bad_route, admit_flow_binding => false,
+        else => true,
+    };
+}
+
 fn fail(out: *Admit, verdict: c_int) c_int {
     out.verdict = verdict;
     return verdict;
@@ -597,4 +620,119 @@ test "v2 admit: tampering Cell B's routing breaks the flow_id binding" {
     try testing.expectEqual(admit_flow_binding, cm_forward_v2_admit(
         &cell_a, &sig, &pa, &pb_payload, pb_payload.len, &pb,
         &MAC_B, &MAC_A, &caps, null, 0, stubVerify, &out));
+}
+
+test "burst slot: an unproven Cell B never releases the victim's Cell A" {
+    const testing = std.testing;
+    // The attack: copy an in-flight flow_id, send garbage. Both of these are
+    // reachable by anyone in radio range, and both must leave the slot alone.
+    try testing.expect(!cm_admit_consumes_burst_slot(admit_bad_route));
+    try testing.expect(!cm_admit_consumes_burst_slot(admit_flow_binding));
+    // Not ours at all — nothing to release.
+    try testing.expect(!cm_admit_consumes_burst_slot(admit_ignore));
+}
+
+test "burst slot: a proven pair releases it, however it then fails" {
+    const testing = std.testing;
+    // Past the binding, so this IS the origin's pair for our Cell A. It will
+    // fail the same way if retried; holding the slot for it buys nothing.
+    try testing.expect(cm_admit_consumes_burst_slot(admit_no_cert));
+    try testing.expect(cm_admit_consumes_burst_slot(admit_sig_invalid));
+    try testing.expect(cm_admit_consumes_burst_slot(admit_cert_hash_mismatch));
+    try testing.expect(cm_admit_consumes_burst_slot(admit_channel_reject));
+    try testing.expect(cm_admit_consumes_burst_slot(admit_relay));
+    try testing.expect(cm_admit_consumes_burst_slot(admit_deliver));
+}
+
+test "v1 admit: a stale sequence number is refused, and says which code" {
+    const testing = std.testing;
+    stub_accepts = true;
+    const chid = [_]u8{0xa5} ** 16;
+
+    var fv1 = std.mem.zeroes(forward_v1.ForwardV1);
+    fv1.total_hops = 2;
+    fv1.segments[0] = MAC_B;
+    fv1.segments[1] = MAC_C;
+    fv1.hop_commitments[0].channel_id = chid;
+    fv1.hop_commitments[0].seq = 1;
+    fv1.hop_commitments[0].device_share = 10;
+    fv1.hop_commitments[0].expiry_ms = std.math.maxInt(u64);
+
+    const cell = makeCell(DOMAIN_RELAY);
+    const sig = [_]u8{0} ** 64;
+    var caps: capability.CapTable = undefined;
+    tableWithGrant(&caps, chid, DOMAIN_RELAY);
+    fv1.hop_commitments[0].cert_hash = storedCertHash(&caps, chid, DOMAIN_RELAY);
+
+    var chan = std.mem.zeroes(channel.Channel);
+    chan.state = channel.state_open;
+    chan.channel_id = chid;
+    chan.total_capacity = 100000;
+    chan.expiry_ms = std.math.maxInt(u64);
+    var out: Admit = undefined;
+
+    // First one lands.
+    try testing.expectEqual(admit_relay, cm_forward_v1_admit(
+        &cell, &sig, &fv1, &MAC_B, &MAC_A, &caps, &chan, 0, stubVerify, &out));
+
+    // Replaying the same seq is refused — this is what a board does to a bridge
+    // whose counter restarted, and it cost an hour to recognise on hardware.
+    try testing.expectEqual(admit_channel_reject, cm_forward_v1_admit(
+        &cell, &sig, &fv1, &MAC_B, &MAC_A, &caps, &chan, 0, stubVerify, &out));
+    try testing.expectEqual(@as(c_int, -3), out.channel_rc);   // err_stale_seq
+}
+
+test "v1 admit: an expired commitment is refused, and says which code" {
+    const testing = std.testing;
+    stub_accepts = true;
+    const chid = [_]u8{0xa5} ** 16;
+
+    var fv1 = std.mem.zeroes(forward_v1.ForwardV1);
+    fv1.total_hops = 2;
+    fv1.segments[0] = MAC_B;
+    fv1.segments[1] = MAC_C;
+    fv1.hop_commitments[0].channel_id = chid;
+    fv1.hop_commitments[0].seq = 1;
+    fv1.hop_commitments[0].device_share = 10;
+    fv1.hop_commitments[0].expiry_ms = 0;   // the fixture bug that hid case 3
+
+    const cell = makeCell(DOMAIN_RELAY);
+    const sig = [_]u8{0} ** 64;
+    var caps: capability.CapTable = undefined;
+    tableWithGrant(&caps, chid, DOMAIN_RELAY);
+    fv1.hop_commitments[0].cert_hash = storedCertHash(&caps, chid, DOMAIN_RELAY);
+
+    var chan = std.mem.zeroes(channel.Channel);
+    chan.state = channel.state_open;
+    chan.channel_id = chid;
+    chan.total_capacity = 100000;
+    chan.expiry_ms = std.math.maxInt(u64);
+    var out: Admit = undefined;
+
+    try testing.expectEqual(admit_channel_reject, cm_forward_v1_admit(
+        &cell, &sig, &fv1, &MAC_B, &MAC_A, &caps, &chan, 1000, stubVerify, &out));
+    try testing.expectEqual(@as(c_int, -6), out.channel_rc);   // err_expired
+}
+
+test "v2 admit: a malformed route is refused BEFORE the flow binding" {
+    const testing = std.testing;
+    stub_accepts = true;
+    // A route claiming more hops than the array holds. It must be refused as a
+    // bad route — and, per cm_admit_consumes_burst_slot, must not cost the
+    // holder its buffered Cell A.
+    var pb = std.mem.zeroes(forward_v2.RoutingCont);
+    pb.segments[0] = MAC_B;
+    var pa = std.mem.zeroes(forward_v2.ForwardV2);
+    pa.total_hops = 200;
+
+    const cell_a = makeCell(DOMAIN_RELAY);
+    const sig = [_]u8{0} ** 64;
+    var payload: [forward_v2.routing_used_bytes]u8 =
+        [_]u8{0} ** forward_v2.routing_used_bytes;
+    var out: Admit = undefined;
+
+    try testing.expectEqual(admit_bad_route, cm_forward_v2_admit(
+        &cell_a, &sig, &pa, &payload, payload.len, &pb,
+        &MAC_B, &MAC_A, null, null, 0, stubVerify, &out));
+    try testing.expect(!cm_admit_consumes_burst_slot(out.verdict));
 }

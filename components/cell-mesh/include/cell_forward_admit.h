@@ -56,6 +56,17 @@ typedef struct {
     int     channel_rc;          // the channel machine's own code on CHANNEL_REJECT
 } cm_admit_t;
 
+/**
+ * May the forward.v2 burst slot be released, given this verdict?
+ *
+ * Protocol, not bookkeeping: it decides whether a victim's buffered Cell A
+ * survives an attacker's Cell B. Cell B is unsigned and flow_id is public, so
+ * the pairing check is passable by anyone who copies one off the air; releasing
+ * the slot for such a cell is a remote denial of service. Released only once the
+ * binding has proven the pair genuine.
+ */
+bool cm_admit_consumes_burst_slot(int verdict);
+
 /** ECDSA verify, injected. Matches cm_sig_verify: 0 on success. */
 typedef int (*cm_sig_verify_fn)(const uint8_t *pubkey,
                                 const uint8_t *msg_hash,
