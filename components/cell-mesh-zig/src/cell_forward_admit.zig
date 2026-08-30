@@ -64,6 +64,11 @@ pub const Admit = extern struct {
     verdict: c_int,
     hop: u8,
     next_mac: [6]u8,
+    /// True when F6 fired: the all-zero demo channel id was replaced by a real
+    /// one. It is a device-state mutation driven by the wire, and the caller
+    /// needs to be able to say so on a serial cable. Costs nothing — this byte
+    /// was struct padding.
+    adopted_channel_id: bool,
     /// The channel state machine's own code, when verdict is channel_reject.
     /// Carried so the caller's log can name the reason rather than "rejected".
     channel_rc: c_int,
@@ -89,8 +94,18 @@ fn hashCell(cell: [*]const u8, out: *[32]u8) void {
 /// ⚠ The grant check runs BEFORE the signature, which is the reverse of the
 /// order this had in C. Deliberate: cm_sig_verify is ~267 ms and the grant check
 /// is a scan of four table entries, so an unprovisioned board no longer burns a
-/// quarter-second on every v0 addressed to it. The only observable difference is
-/// which refusal a cell that fails BOTH reports.
+/// quarter-second on every v0 addressed to it.
+///
+/// Two honest consequences, neither of which the earlier wording admitted.
+/// First, a cell failing BOTH now reports the grant, not the signature. Second,
+/// refusal LATENCY now discloses whether this board holds a relay grant — an
+/// unprovisioned board answers in microseconds, a provisioned one in ~267 ms.
+/// That is a side channel, and it is the price of not being trivially
+/// CPU-exhausted by a stranger. It fails closed either way.
+///
+/// The domain is also read from a header this function has not yet verified.
+/// That is safe because it only ever NARROWS which grant can match: a forged
+/// domain finds no grant, and a real one still has to survive the signature.
 pub export fn cm_forward_v0_admit(
     maybe_cell: ?[*]const u8,
     maybe_sig: ?[*]const u8,
@@ -179,6 +194,7 @@ fn admitCapabilityTail(
             !std.mem.eql(u8, commitment.channel_id[0..], zero16[0..]))
         {
             @memcpy(c.channel_id[0..], commitment.channel_id[0..]);
+            out.adopted_channel_id = true;
         }
         const crc = channel.cm_channel_apply_commitment(c, commitment, now_ms);
         if (crc != channel.ok) {
@@ -217,6 +233,13 @@ pub export fn cm_forward_v1_admit(
     if (loc == forward.locate_bad_route) return fail(out, admit_bad_route);
     if (loc < 0) return fail(out, admit_ignore);
 
+    // hop_commitments is indexed unbounded here on purpose, and it is only safe
+    // because cm_forward_locate refuses total_hops > max_hops and never reports
+    // a hop equal to max_hops. hop_commitments and segments are both max_hops
+    // long. ReleaseSmall turns bounds checks off, so if that invariant ever
+    // moves this becomes a silent out-of-bounds read — the C used to carry an
+    // explicit `if (my_hop < CM_FORWARD_MAX_HOPS)` guard here.
+    std.debug.assert(out.hop < forward.max_hops);
     const rc = admitCapabilityTail(
         cell, sig, &fv1.hop_commitments[out.hop], wire.flags(cell[0..wire.cell_size]),
         maybe_caps, maybe_chan, now_ms, verify, out,
@@ -272,6 +295,8 @@ pub export fn cm_forward_v2_admit(
         return fail(out, admit_flow_binding);
     }
 
+    // Same invariant as v1: locate guarantees hop < max_hops.
+    std.debug.assert(out.hop < forward.max_hops);
     // Domain from Cell A — the signed half. See the note above.
     const rc = admitCapabilityTail(
         primary_cell, primary_sig, &pb.hop_commitments[out.hop],

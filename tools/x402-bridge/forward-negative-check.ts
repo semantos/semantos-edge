@@ -99,7 +99,7 @@ const send = async (cell: Uint8Array, sig: Uint8Array) => {
   }
 };
 
-const watch = async (label: string, run: () => Promise<void>, waitMs: number): Promise<string> => {
+const watchOnce = async (run: () => Promise<void>, waitMs: number): Promise<string> => {
   const tail = spawn('cat', [WATCH]);
   let seen = '';
   tail.stdout.on('data', (d) => { seen += d.toString(); });
@@ -107,12 +107,33 @@ const watch = async (label: string, run: () => Promise<void>, waitMs: number): P
   await run();
   await new Promise((r) => setTimeout(r, waitMs));
   tail.kill();
-  const clean = seen.replace(/\x1b\[[0-9;]*m/g, '');
+  return seen.replace(/\x1b\[[0-9;]*m/g, '');
+};
+
+/**
+ * Inject and watch, retrying once if the tail caught nothing.
+ *
+ * Two `cat` processes on the same tty in quick succession race: the second
+ * opens before the first has released, and the board's reply lands in nobody's
+ * buffer. That reads as "the board said nothing", which is indistinguishable
+ * from a refusal — so a flaky capture would silently look like a passing
+ * negative test. Retry rather than report a verdict we did not observe.
+ */
+const watch = async (label: string, run: () => Promise<void>, waitMs: number): Promise<string> => {
   console.log(`\n${label}`);
-  for (const l of clean.split('\n')) {
+  let out = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    out = await watchOnce(run, waitMs);
+    if (/forward|routing\.cont|RELAY|DELIVERED/.test(out)) break;
+    if (attempt === 0) {
+      console.log('  (no reply captured — retrying, the serial tail can race)');
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  for (const l of out.split('\n')) {
     if (/forward|routing\.cont|RELAY|DELIVERED/.test(l)) console.log(`  ${l.trim()}`);
   }
-  return clean;
+  return out;
 };
 
 const signer = startSigner();
@@ -164,34 +185,7 @@ let failures = 0;
   } else { console.log('  no verdict (nothing logged)'); failures++; }
 }
 
-// ── 3. forward.v0 from the RIGHT key, to a device with no relay grant ───────
-{
-  // Reset board B so its capability table is empty — the state an
-  // unprovisioned board is in. Then send a perfectly valid, correctly-signed
-  // forward.v0. Authenticated is not authorised.
-  console.log('\n3. forward.v0, correctly signed, to a board with NO relay grant — must be REFUSED');
-  console.log('   (resetting the watch board to clear its capability table…)');
-  execFileSync('python3', ['-c', `
-import serial,time
-p=serial.Serial('${WATCH}',115200,timeout=1)
-p.setDTR(False); p.setRTS(True); time.sleep(0.1); p.setRTS(False); p.close()`]);
-  await new Promise((r) => setTimeout(r, 20000));  // boot ECDSA bench
-  execFileSync('stty', ['-f', WATCH, 'raw', '-echo', '115200', 'clocal', 'cread']);
-
-  const payload = buildV0Payload(2);
-  const cell = mintCell(T_FWD_V0, payload, OWNER, BigInt(Date.now()), domainForType(T_FWD_V0));
-  const x = signer.key.sign(Array.from(cell));
-  const sig = new Uint8Array([...x.r.toArray('be', 32), ...x.s.toArray('be', 32)]);
-
-  const out = await watch('   injecting…', () => send(cell, sig), 6000);
-  if (out.includes('no relay grant')) {
-    console.log('  REFUSED — the operator signed it, but this board was never granted relay');
-  } else if (/forward → relay|FORWARD DELIVERED|INSTALL_RULE: queued/.test(out)) {
-    console.log('  ACTED ON IT — the capability gate is not working'); failures++;
-  } else { console.log('  no verdict (nothing logged)'); failures++; }
-}
-
-// ── 4. Cell B's HEADER must not steer any decision ─────────────────────────
+// ── 3. Cell B's HEADER must not steer any decision ─────────────────────────
 {
   // The flow_id binding covers Cell B's PAYLOAD (bytes 16..320), not its
   // header. So Cell B's header is attacker-controlled for good — it carries no
@@ -228,7 +222,7 @@ p.setDTR(False); p.setRTS(True); time.sleep(0.1); p.setRTS(False); p.close()`]);
   const sigA = new Uint8Array([...x.r.toArray('be', 32), ...x.s.toArray('be', 32)]);
 
   const out = await watch(
-    "4. Cell B's header domain switched to org.member — the decision must ignore it",
+    "3. Cell B's header domain switched to org.member — the decision must ignore it",
     async () => {
       await send(cellA, sigA);
       await new Promise((r) => setTimeout(r, 2500));
@@ -240,6 +234,38 @@ p.setDTR(False); p.setRTS(True); time.sleep(0.1); p.setRTS(False); p.close()`]);
     console.log("  STEERED BY IT — Cell B's unsigned header is still choosing the grant"); failures++;
   } else if (out.includes('sig INVALID')) {
     console.log('  inconclusive — Cell A was signed by the wrong key, not a domain result'); failures++;
+  } else { console.log('  no verdict (nothing logged)'); failures++; }
+}
+
+// ── 4. forward.v0 from the RIGHT key, to a device with no relay grant ───────
+//
+// LAST on purpose: this case RESETS the watch board, which tears the tty down
+// and kills any `cat` attached to it. A case after this one cannot reliably
+// capture the board's reply, and a missed capture reads exactly like a refusal
+// — which would make a broken test look like a passing one.
+{
+  // Reset board B so its capability table is empty — the state an
+  // unprovisioned board is in. Then send a perfectly valid, correctly-signed
+  // forward.v0. Authenticated is not authorised.
+  console.log('\n4. forward.v0, correctly signed, to a board with NO relay grant — must be REFUSED');
+  console.log('   (resetting the watch board to clear its capability table…)');
+  execFileSync('python3', ['-c', `
+import serial,time
+p=serial.Serial('${WATCH}',115200,timeout=1)
+p.setDTR(False); p.setRTS(True); time.sleep(0.1); p.setRTS(False); p.close()`]);
+  await new Promise((r) => setTimeout(r, 20000));  // boot ECDSA bench
+  execFileSync('stty', ['-f', WATCH, 'raw', '-echo', '115200', 'clocal', 'cread']);
+
+  const payload = buildV0Payload(2);
+  const cell = mintCell(T_FWD_V0, payload, OWNER, BigInt(Date.now()), domainForType(T_FWD_V0));
+  const x = signer.key.sign(Array.from(cell));
+  const sig = new Uint8Array([...x.r.toArray('be', 32), ...x.s.toArray('be', 32)]);
+
+  const out = await watch('   injecting…', () => send(cell, sig), 6000);
+  if (out.includes('no relay grant')) {
+    console.log('  REFUSED — the operator signed it, but this board was never granted relay');
+  } else if (/forward → relay|FORWARD DELIVERED|INSTALL_RULE: queued/.test(out)) {
+    console.log('  ACTED ON IT — the capability gate is not working'); failures++;
   } else { console.log('  no verdict (nothing logged)'); failures++; }
 }
 

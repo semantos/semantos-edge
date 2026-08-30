@@ -26,6 +26,7 @@
 #include "cell_channel.h"
 #include "cell_capability.h"
 #include "cell_sig.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,7 +52,8 @@ typedef struct {
     int     verdict;
     uint8_t hop;
     uint8_t next_mac[6];
-    int     channel_rc;   // the channel machine's own code on CHANNEL_REJECT
+    bool    adopted_channel_id;  // F6 fired: the all-zero sentinel was replaced
+    int     channel_rc;          // the channel machine's own code on CHANNEL_REJECT
 } cm_admit_t;
 
 /** ECDSA verify, injected. Matches cm_sig_verify: 0 on success. */

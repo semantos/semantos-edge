@@ -1104,6 +1104,11 @@ static void on_radio_recv(const uint8_t sender_mac[6],
         cm_forward_step_rc_t rc = (loc == CM_ADMIT_RELAY)
                                 ? CM_FWD_NEXT : CM_FWD_DELIVERED;
 
+        if (adm.adopted_channel_id) {
+            const uint8_t *c4 = s_fwd_channel.channel_id;
+            ESP_LOGI(TAG, "fwd_channel: real channel_id adopted %02x%02x%02x%02x...",
+                     c4[0], c4[1], c4[2], c4[3]);
+        }
         ESP_LOGI(TAG, "RX [%s] forward.v1: CAP-verified hop=%u", mac_str, (unsigned)my_hop);
         {
             const uint8_t *ch = fv1.hop_commitments[my_hop].cert_hash;
@@ -1264,9 +1269,27 @@ static void on_radio_recv(const uint8_t sender_mac[6],
                                       &s_cap_table, &s_fwd_channel,
                                       (uint64_t)esp_log_timestamp(),
                                       cm_sig_verify, &adm);
-        // Only consume the burst slot once we know this hop is ours; a Cell B
-        // for a different hop must leave Cell A buffered for the real one.
-        if (loc != CM_ADMIT_IGNORE) s_fwdv2_burst.valid = false;
+        // Consume the burst slot only once this Cell B has PROVEN it is the
+        // origin's partner for the Cell A we are holding.
+        //
+        // This is narrower than "anything but IGNORE", and the difference is a
+        // remote denial of service. Cell B is unsigned and flow_id is a public
+        // function of routing content, so the pairing check above — flow_id
+        // equality — is passable by anyone who copies an in-flight flow_id. If
+        // such a cell consumed the slot, an observer could destroy a legitimate
+        // buffered Cell A at will by sending a malformed route or mismatched
+        // routing content.
+        //
+        // BAD_ROUTE and FLOW_BINDING both mean "this is not our partner cell",
+        // so the real one must still be able to arrive. Every other refusal is
+        // reached only AFTER the binding proved the pair genuine, and a genuine
+        // pair that fails will fail again — holding the slot for it buys
+        // nothing.
+        if (loc != CM_ADMIT_IGNORE &&
+            loc != CM_ADMIT_BAD_ROUTE &&
+            loc != CM_ADMIT_FLOW_BINDING) {
+            s_fwdv2_burst.valid = false;
+        }
         switch (loc) {
             case CM_ADMIT_IGNORE:    return;
             case CM_ADMIT_BAD_ROUTE:
@@ -1303,6 +1326,11 @@ static void on_radio_recv(const uint8_t sender_mac[6],
         cm_forward_step_rc_t rc = (loc == CM_ADMIT_RELAY)
                                 ? CM_FWD_NEXT : CM_FWD_DELIVERED;
 
+        if (adm.adopted_channel_id) {
+            const uint8_t *c4 = s_fwd_channel.channel_id;
+            ESP_LOGI(TAG, "fwd_channel(v2): real channel_id adopted %02x%02x%02x%02x...",
+                     c4[0], c4[1], c4[2], c4[3]);
+        }
         ESP_LOGI(TAG, "RX [%s] forward.v2: CAP-verified hop=%u", mac_str, (unsigned)my_hop);
         ESP_LOGI(TAG, "RX [%s] forward.v2: channel OK hop=%u seq=%u device_share=%u",
                  mac_str, (unsigned)my_hop,
