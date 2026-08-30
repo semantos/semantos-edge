@@ -18,14 +18,15 @@
  */
 
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { startSigner } from './signer.js';
+import { startSigner, checkAgainstFirmware } from './signer.js';
 import { openSync, writeSync, closeSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PrivateKey, ECDSA, BigNumber } from '@bsv/sdk';
 import { mintCell, signCell, typeHash, writeU16LE, writeU32LE, sha256, ecdsaDer, buildActuatorActivate, type ActuatorOffer } from './cell-codec.js';
 import { frameCell } from './serial-mesh.js';
-import { domainForType } from './cell-domains.js';
+import { domainForType, KNOWN_CELL_TYPES } from './cell-domains.js';
+import { DOMAIN } from '../domains.js';
 import { getPublicKey, createSignature, createAction, rawTxHexFromCreateAction, p2pkhScriptHexFromPubkey, DEFAULT_ORIGIN, METANET_BASE } from './metanet.js';
 import { broadcastTxHex } from './arc.js';
 import { encodeScadaCell, anchorScadaCell, deriveScadaLeaf, SCADA_ACTION } from './scada-anchor.js';
@@ -57,7 +58,8 @@ const WEB = join(dirname(fileURLToPath(import.meta.url)), 'web', 'control.html')
 // WALLET signs CELLS. A device checks every signed cell against the trust
 // anchor compiled into its firmware, so this must equal that anchor — the
 // fleet operator root by default. See signer.ts.
-const WALLET = startSigner().key;
+const signerInfo = startSigner();
+const WALLET = signerInfo.key;
 
 // CHAIN_WALLET funds and settles ON-CHAIN. openChannel() locks real sats to
 // its pubkey and settleChannel() spends them, so it must stay wherever the
@@ -478,12 +480,113 @@ async function scadaControlAndLog(tag: string, durationMs: number): Promise<{ tx
 // ── per-device status (liveness + inferred LED) ──────────────────────
 // Port suffix → known forward-demo role (fixed MAC assignment).
 const ROLE: Record<string, string> = { '21301': 'A·originator', '21201': 'B·relay', '21401': 'C·destination' };
-interface DevState { lastSeen: number; ledUntil: number; rx: number; }
+// ── Authorisation state, observed ────────────────────────────────────
+//
+// A device never answers a query — it only narrates. So everything below is
+// parsed out of the serial the control plane already tails. That makes it an
+// OBSERVATION, not a reading: a board that has said nothing since boot shows an
+// empty grant list whether or not it holds one, and /authz labels it as such
+// rather than implying the table is empty.
+//
+// The point of collecting it is the thing that is genuinely hard without it:
+// six sequential gates all refuse a cell, and from outside the board every
+// refusal looks the same. Naming which gate, and for channel rejections which
+// code, is the difference between a minute and an afternoon.
+
+interface Grant {
+  channelId: string;     // first 4 bytes, as the firmware prints them
+  edge: string;          // first 4 bytes of the relay pubkey
+  domain: string;        // 0x-prefixed, as printed
+  at: number;
+}
+interface Refusal {
+  gate: string;          // which of the sequential checks said no
+  detail: string;        // the discriminator, e.g. err_stale_seq
+  count: number;
+  last: number;
+  line: string;          // the raw log line, so nothing is lost in the mapping
+}
+interface DevState {
+  lastSeen: number; ledUntil: number; rx: number;
+  /// False once the tail process has exited — usually a board reset.
+  tailAlive: boolean;
+  mac?: string;
+  policyDomain?: string;      // what cm_cap_set_domain was called with
+  engine?: boolean;           // did the cell engine load this boot
+  grants: Grant[];
+  refusals: Refusal[];
+}
 const devices = new Map<string, DevState>();
+
+/**
+ * cm_channel_apply_commitment's return codes, by name.
+ *
+ * The firmware logs `rc=-3` and nothing else, and -3 versus -6 is the
+ * difference between "your bridge restarted its counter" and "you left
+ * expiry_ms zero". Both cost an hour to recognise from the number alone.
+ */
+const CHANNEL_RC: Record<string, string> = {
+  '-1': 'err_bad_state — the channel is not open',
+  '-2': 'err_bad_id — commitment names a different channel',
+  '-3': 'err_stale_seq — seq already used; a restarted bridge counter looks like this',
+  '-4': 'err_non_mono — device_share went backwards',
+  '-5': 'err_overflow — share exceeds channel capacity',
+  '-6': 'err_expired — commitment expiry_ms is in the past (zero counts as past)',
+  '-7': 'err_seq_match — seq repeated with different contents',
+};
+
+function noteRefusal(d: DevState, gate: string, detail: string, line: string): void {
+  const hit = d.refusals.find((r) => r.gate === gate && r.detail === detail);
+  if (hit) { hit.count++; hit.last = Date.now(); hit.line = line; return; }
+  d.refusals.push({ gate, detail, count: 1, last: Date.now(), line });
+  if (d.refusals.length > 32) d.refusals.shift();
+}
+
 function trackDevice(label: string, ln: string): void {
   let d = devices.get(label);
-  if (!d) { d = { lastSeen: 0, ledUntil: 0, rx: 0 }; devices.set(label, d); }
+  if (!d) { d = { lastSeen: 0, ledUntil: 0, rx: 0, tailAlive: true, grants: [], refusals: [] }; devices.set(label, d); }
   d.lastSeen = Date.now();
+  d.tailAlive = true;
+
+  // ── identity and policy ──────────────────────────────────────────────
+  const mac = ln.match(/wifi:mode : sta \(([0-9a-f:]{17})\)/);
+  if (mac) d.mac = mac[1];
+  const pol = ln.match(/cap table: device domain (0x[0-9a-f]{8})/);
+  if (pol) { d.policyDomain = pol[1]; d.grants = []; d.refusals = []; }  // fresh boot
+  if (ln.includes('cell-engine up')) d.engine = true;
+  if (ln.includes('semantos_init failed')) d.engine = false;
+
+  // ── grants ───────────────────────────────────────────────────────────
+  const g = ln.match(/CAP cert installed: ch=([0-9a-f]+)\.\.\. edge=([0-9a-f]+)\.\.\. domain=(0x[0-9a-f]{8})/);
+  if (g) {
+    d.grants = d.grants.filter((x) => !(x.channelId === g[1] && x.domain === g[3]));
+    d.grants.push({ channelId: g[1], edge: g[2], domain: g[3], at: Date.now() });
+  }
+
+  // ── refusals, by gate, in the order the device applies them ──────────
+  let m: RegExpMatchArray | null;
+  if ((m = ln.match(/CAP cert REFUSED: wrong domain (0x[0-9a-f]+), this device is (0x[0-9a-f]+)/))) {
+    noteRefusal(d, 'device-domain policy', `cert domain ${m[1]} != device ${m[2]}`, ln);
+  } else if ((m = ln.match(/malformed route \(total_hops=(\d+)\)/))) {
+    noteRefusal(d, 'route', `total_hops=${m[1]} exceeds the segment array`, ln);
+  } else if (ln.includes("flow_id binding")) {
+    noteRefusal(d, 'A/B binding', 'Cell B routing does not hash to the flow_id Cell A signed', ln);
+  } else if ((m = ln.match(/no relay grant for domain (0x[0-9a-f]+)/))) {
+    noteRefusal(d, 'capability', `no grant in ${m[1]} — this board was never provisioned for it`, ln);
+  } else if ((m = ln.match(/no cert for channel ([0-9a-f]+)/))) {
+    noteRefusal(d, 'capability', `no cert for channel ${m[1]}`, ln);
+  } else if (ln.includes('sig INVALID')) {
+    noteRefusal(d, 'signature',
+      ln.includes('wallet pubkey') ? 'not signed by the trust anchor'
+                                   : 'not signed by the key the capability cert grants', ln);
+  } else if (ln.includes('cert_hash mismatch')) {
+    noteRefusal(d, 'BRC-108 binding', 'commitment names a different cert than the one installed', ln);
+  } else if ((m = ln.match(/CHANNEL REJECT hop=(\d+) rc=(-?\d+)/))) {
+    noteRefusal(d, 'channel', CHANNEL_RC[m[2]] ?? `rc=${m[2]}`, ln);
+  } else if ((m = ln.match(/routing\.cont: no matching Cell A \(flow=([0-9a-f]+)\)/))) {
+    noteRefusal(d, 'A/B pairing', `no buffered Cell A for flow ${m[1]}`, ln);
+  }
+
   const rxm = ln.match(/rx_total=(\d+)/); if (rxm) d.rx = Number(rxm[1]);
   // Infer LED-on from logged blink/actuator durations (sub-1s blinks are
   // unlogged by the firmware, so this catches >=1s blinks + actuations).
@@ -505,6 +608,14 @@ for (const port of tailPorts) {
   spawnSync('stty', ['-f', port, baud, 'raw', '-echo'], { stdio: 'ignore' });
   const label = port.split('modem')[1] ?? port;
   const c = spawn('cat', [port]) as ChildProcessWithoutNullStreams;
+  // A board reset tears the tty down and takes `cat` with it. Without noticing,
+  // /authz would go on serving that board's last known state as though it were
+  // current — which is worse than reporting nothing, because it reads as a
+  // healthy device.
+  c.on('exit', () => {
+    const dead = devices.get(label);
+    if (dead) dead.tailAlive = false;
+  });
   let buf = '';
   c.stdout.on('data', (d: Buffer) => {
     buf += d.toString();
@@ -994,6 +1105,90 @@ const server = Bun.serve({
         return json({ ok: false, error: (e as Error).message }, 500);
       }
     }
+    // ── GET /authz — who may act, and why anything was refused ───────────
+    //
+    // Two views side by side: what this control plane ISSUED, and what the
+    // devices were OBSERVED to install or refuse. The gap between them is the
+    // interesting part, and it is the thing that is invisible from either side
+    // alone — a cert the bridge is certain it sent, that no board ever
+    // installed, looks identical to a working fleet until traffic drops.
+    //
+    // Refusals are grouped by GATE. A cell passes six sequential checks and
+    // from outside the board every failure looks the same; naming the gate, and
+    // for channel rejections decoding the rc, is the whole point.
+    if (req.method === 'GET' && url.pathname === '/authz') {
+      const check = checkAgainstFirmware(signerInfo);
+      const rails = Object.entries(DOMAIN).map(([name, value]) => ({
+        name,
+        value: `0x${(value >>> 0).toString(16).padStart(8, '0')}`,
+        cellTypes: KNOWN_CELL_TYPES.filter((t) => domainForType(typeHash(t)) === value),
+      }));
+
+      const issued = [...s_certHashes.entries()].map(([chHex, hash]) => ({
+        channelId: chHex.slice(0, 8),
+        domain: `0x${DOMAIN.meshRelay.toString(16).padStart(8, '0')}`,
+        edge: Buffer.from(s_relayKeys.get(chHex)?.pk ?? new Uint8Array()).toString('hex').slice(0, 8),
+        certHash: Buffer.from(hash).toString('hex').slice(0, 8),
+      }));
+
+      const seen = [...devices.entries()].map(([label, d]) => ({
+        port: label,
+        role: ROLE[label] ?? 'unknown',
+        mac: d.mac ?? null,
+        // Freshness, not just presence. State parsed from serial is only as
+        // current as the last line that arrived, and a dead tail keeps its
+        // last words indefinitely.
+        lastSeenSecondsAgo: d.lastSeen ? Math.round((Date.now() - d.lastSeen) / 1000) : null,
+        tailAlive: d.tailAlive,
+        stale: !d.tailAlive || d.lastSeen === 0,
+        engineLoaded: d.engine ?? null,
+        policyDomain: d.policyDomain ?? null,
+        grants: d.grants,
+        refusals: [...d.refusals].sort((x, y) => y.last - x.last),
+      }));
+
+      // Discrepancies worth surfacing rather than leaving to be inferred.
+      const gaps: string[] = [];
+      if (!check.matches) {
+        gaps.push('signer does not match the firmware anchor — every signed cell will be refused');
+      }
+      for (const dev of seen) {
+        if (!dev.tailAlive) {
+          gaps.push(`${dev.port}: serial tail has exited — this device's state is frozen at its last line, not current`);
+          continue;
+        }
+        if (dev.stale) continue;
+        if (dev.engineLoaded === false) {
+          gaps.push(`${dev.port}: cell engine failed to load — scripted cells will be rejected`);
+        }
+        for (const iss of issued) {
+          const held = dev.grants.some((g) => g.channelId.startsWith(iss.channelId.slice(0, 8)));
+          if (!held) {
+            gaps.push(`${dev.port}: no observed grant for channel ${iss.channelId} that this bridge issued`);
+          }
+        }
+        if (dev.policyDomain && issued.length &&
+            dev.policyDomain !== issued[0].domain) {
+          gaps.push(`${dev.port}: device policy ${dev.policyDomain} but certs are issued on ${issued[0].domain} — installs will be refused`);
+        }
+      }
+
+      return json({
+        ok: true,
+        anchor: {
+          signer: signerInfo.publicKeyHex,
+          source: signerInfo.source,
+          firmware: check.firmwareAnchorHex,
+          matches: check.matches,
+        },
+        rails,
+        issued,
+        devices: seen,
+        gaps,
+        note: 'devices are OBSERVED from serial, not queried — a silent board reports nothing, not nothing-held',
+      });
+    }
+
     // ── GET /channel-state — current channel status ──────────────────────
     if (req.method === 'GET' && url.pathname === '/channel-state') {
       if (!activeChannel) return json({ ok: true, channel: null, note: 'no channel open — POST /open-channel first' });
