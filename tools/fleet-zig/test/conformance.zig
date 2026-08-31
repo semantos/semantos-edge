@@ -1915,3 +1915,38 @@ test "domains: the allocated table covers every flag this layer declares" {
         }
     }
 }
+
+test "graphs: the operator and device trees intersect at the zone" {
+    // The design thesis, asserted rather than assumed: a fleet and its
+    // governance are ONE tree, not two that get reconciled later.
+    //
+    // Both planes derive a zone with the SAME (parent, resourceId, domainFlag)
+    // triple — root, "zone", 0x0e — so zone 0 of the device graph and zone 0 of
+    // the org graph are the same certificate. The graphs diverge only one level
+    // down, where the domain flag separates a device from a person.
+    //
+    // That is what makes co-provisioning possible at all. If the two graphs had
+    // separate roots, naming the contacts who will attest to a succession would
+    // mean joining two trees by convention — a database row, bolted on after
+    // the fact. Sharing the zone makes the attestor set a derivation, and a
+    // recovery recipe carries it for free.
+    const a = std.testing.allocator;
+    const email = "graphs@fleet.example";
+    const salt = "graphs-salt-v1";
+
+    const fleet_zone = try identity.deriveChildIdentity(a, email, salt, "root", "zone", domains.zone, 0);
+    defer fleet_zone.deinit(a);
+    const org_zone = try identity.deriveChildIdentity(a, email, salt, "root", "zone", domains.zone, 0);
+    defer org_zone.deinit(a);
+    try std.testing.expectEqualStrings(&fleet_zone.cert_id, &org_zone.cert_id);
+    try std.testing.expectEqualStrings("root/zone:14:0", fleet_zone.derivation_path);
+
+    // ...and the two populations under it are distinct, by flag alone.
+    const device = try identity.deriveChildIdentity(a, email, salt, fleet_zone.derivation_path, "device", domains.fleet_device, 0);
+    defer device.deinit(a);
+    const member = try identity.deriveChildIdentity(a, email, salt, org_zone.derivation_path, "member", domains.org_member, 0);
+    defer member.deinit(a);
+    try std.testing.expect(!std.mem.eql(u8, &device.cert_id, &member.cert_id));
+    try std.testing.expectEqualStrings("root/zone:14:0/device:15794177:0", device.derivation_path);
+    try std.testing.expectEqualStrings("root/zone:14:0/member:15794178:0", member.derivation_path);
+}
