@@ -82,6 +82,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Fleet ↔ wallet bridge (IDENTITY-PLANE-CONVERGENCE §5). This plane signs the
+    // fleet half + verifies the wallet's page-0 'anyone'-child half. The digest is
+    // pinned by `vectors/fleet-bridge.golden.json` — a copy of semantos-core's
+    // `tests/fixtures/fleet_bridge_kat.json` (manual port; the repos don't sync).
+    const bridge_mod = b.addModule("bridge", .{
+        .root_source_file = b.path("src/bridge.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bridge_mod.addImport("bsvz", bsvz.module("bsvz"));
+    bridge_mod.addAnonymousImport("bridge_golden", .{
+        .root_source_file = b.path("vectors/fleet-bridge.golden.json"),
+    });
+    const bridge_test = b.addTest(.{ .root_module = bridge_mod });
+    const run_bridge = b.addRunArtifact(bridge_test);
+    b.step("test-bridge", "run the fleet↔wallet bridge digest KAT + round-trip").dependOn(&run_bridge.step);
+
     // Conformance against the SDK's pinned golden vector. The vector is
     // embedded rather than read at runtime so the test cannot silently pass by
     // failing to find it.
@@ -122,7 +139,9 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_conformance = b.addRunArtifact(conformance);
-    b.step("test", "run cross-implementation conformance").dependOn(&run_conformance.step);
+    const test_step = b.step("test", "run cross-implementation conformance");
+    test_step.dependOn(&run_conformance.step);
+    test_step.dependOn(&run_bridge.step);
 
     // M5: drive real boards from this plane.
     const hw = b.addExecutable(.{
