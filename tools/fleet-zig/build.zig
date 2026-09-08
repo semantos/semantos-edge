@@ -160,6 +160,25 @@ pub fn build(b: *std.Build) void {
     const run_hw = b.addRunArtifact(hw);
     b.step("hw", "run the hardware proof against two C6 boards").dependOn(&run_hw.step);
 
+    // The fleet operator's half of the live fleet↔wallet bridge — signs the
+    // shared digest over a nonce the wallet operator supplies, prints the fleet
+    // half as JSON for helm `bindFleet`. `zig build bridge-sign -- <args>`.
+    const bridge_sign = b.addExecutable(.{
+        .name = "fleet-bridge-sign",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bridge_sign.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    bridge_sign.root_module.addImport("derive", derive_mod);
+    bridge_sign.root_module.addImport("identity", identity_mod);
+    bridge_sign.root_module.addImport("bridge", bridge_mod);
+    b.installArtifact(bridge_sign);
+    const run_bridge_sign = b.addRunArtifact(bridge_sign);
+    if (b.args) |args| run_bridge_sign.addArgs(args);
+    b.step("bridge-sign", "produce the fleet half of a fleet↔wallet bridge (JSON)").dependOn(&run_bridge_sign.step);
+
     const exporter = b.addExecutable(.{
         .name = "export-recipe",
         .root_module = b.createModule(.{
