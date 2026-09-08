@@ -27,6 +27,8 @@
  */
 
 import readline from 'node:readline';
+import { startSigner } from './signer.js';
+import { DOMAIN } from '../domains.js';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { openSync, writeSync, closeSync, existsSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { PrivateKey, Transaction, Script, P2PKH, ECDSA, BigNumber } from '@bsv/sdk';
@@ -60,7 +62,11 @@ const LIVE       = has('--live') && !has('--dry');
 const DRY        = !LIVE;
 
 // Transport wallet (frame-auth): the key every board is provisioned to trust.
-const WALLET = new PrivateKey('0000000000000000000000000000000000000000000000000000000000000042', 16);
+// Cell authority. The device verifies every signed cell against the trust
+// anchor in its firmware, so this must BE that anchor — it is the fleet
+// operator root by default. Nothing here spends on-chain, so there is no
+// second key to keep apart.
+const WALLET = startSigner().key;
 const OWNER  = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex')).subarray(0, 16);
 const SCRIPTED_TYPE = typeHash('cellmesh.scripted.v0');
 const SIGHASH_ALL_FORKID = 0x41;
@@ -142,7 +148,7 @@ function buildGatedSpend(f: Funding, tamper: boolean): { frame: Buffer; broadcas
   writeU64LE(payload, o, BigInt(f.value)); o += 8;          // input_value
   writeU32LE(payload, o, counter++);     o += 4;            // uniqueness
 
-  const cell = mintCell(SCRIPTED_TYPE, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(SCRIPTED_TYPE, payload, OWNER, BigInt(Date.now()), DOMAIN.meshScript);
   const sig = signCell(cell, WALLET);                      // frame auth (trusted wallet)
   const frame = Buffer.from(frameCell(cell, sig));
 

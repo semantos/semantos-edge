@@ -219,10 +219,34 @@ static NativeSymbol g_host_native_symbols[] = {
 // keep this pool external so LCD buffers and WAMR linear memory are not
 // fighting for the same contiguous internal-RAM block.
 //
+// 2026-08-27 — 96 KB was silently too small, and the failure did not look like
+// a failure. `wasm_runtime_load` returned "allocate memory failed" for the
+// 36,647-byte cell-engine blob, so the engine was LINKED into the image (it is
+// right there in the .map) but never actually ran. Scripted cells were being
+// rejected for want of an engine that had failed to load at boot. Anything
+// checking "is the engine compiled in?" answered yes; the only honest question
+// is whether kernel_init returned.
+//
+// Measured on ESP32-C6 v0.2, ESP-IDF 5.3.1, both boards:
+//
+//    96 KB  -> wasm_runtime_load FAILS. Engine absent, WiFi fine.
+//   128 KB  -> engine loads (kernel_init rc=0) AND WiFi/ESP-NOW come up.
+//   160 KB  -> engine loads, then esp_wifi_init aborts in cell_radio.c and the
+//              board boot-loops. The pool took the contiguous block WiFi needs
+//              for its RX buffers.
+//
+// So the window is real and narrow, and 128 KB sits inside it. This is the
+// "engine + WiFi don't both fit on a C6" wall from 2026-05, re-measured: it is
+// not that they do not fit, it is that the pool has to be sized between two
+// failure modes that look nothing alike.
+//
+// Linear memory does NOT come from this pool (os_mmap -> heap_caps_malloc, see
+// the note above), which is why a bigger pool starves WiFi rather than helping
+// the mmap.
 #if CONFIG_SPIRAM
-#define WAMR_HEAP_POOL_BYTES (128 * 1024)
+#define WAMR_HEAP_POOL_BYTES (192 * 1024)
 #else
-#define WAMR_HEAP_POOL_BYTES (96 * 1024)
+#define WAMR_HEAP_POOL_BYTES (128 * 1024)
 #endif
 static uint8_t *g_wamr_heap_pool = NULL;
 

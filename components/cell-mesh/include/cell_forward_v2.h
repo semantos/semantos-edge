@@ -153,6 +153,23 @@ cm_forward_step_rc_t cm_forward_v2_step(cm_forward_v2_t *primary,
                                          cm_routing_cont_t *routing,
                                          uint8_t out_next_mac[6]);
 
+
+// ── Cell A <-> Cell B binding ────────────────────────────────────────────────
+//
+// Cell A is signed; Cell B is not, and Cell B carries the route and the payment
+// claims. flow_id is 16 bytes at offset 0 of BOTH cells, lives inside the
+// signed Cell A, and is already compared for equality when the pair is matched.
+// Defining it as a digest of Cell B's routing content turns that existing check
+// into the binding, at no cost in wire space.
+//
+// The digest starts past flow_id itself (offset 16) to avoid circularity and
+// ends at CM_ROUTING_CONT_USED_BYTES, which is exactly what the decoder reads.
+
+#define CM_ROUTING_CONT_FLOW_BINDING_OFF 16u
+
+/** Compute the flow_id a Cell B payload must carry. `out` receives 16 bytes. */
+int cm_routing_cont_flow_id(const uint8_t *payload, size_t payload_len, uint8_t *out);
+
 #ifdef __cplusplus
 }
 #endif

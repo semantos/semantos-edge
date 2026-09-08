@@ -26,6 +26,8 @@
  */
 
 import readline from 'node:readline';
+import { startSigner } from './signer.js';
+import { DOMAIN } from '../domains.js';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { PrivateKey, ECDSA, BigNumber } from '@bsv/sdk';
@@ -50,7 +52,11 @@ const runScript  = flag('--run');                                    // e.g. "go
 
 // The wallet the boards were provisioned to trust (matches sign-cell-deck.ts
 // + mesh-console.ts). Frame sigs and the P2PK lock both key off it.
-const WALLET = new PrivateKey('0000000000000000000000000000000000000000000000000000000000000042', 16);
+// Cell authority. The device verifies every signed cell against the trust
+// anchor in its firmware, so this must BE that anchor — it is the fleet
+// operator root by default. Nothing here spends on-chain, so there is no
+// second key to keep apart.
+const WALLET = startSigner().key;
 const OWNER  = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex')).subarray(0, 16);
 const WALLET_PUBKEY = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex')); // 33-byte compressed SEC
 const SCRIPTED_TYPE = typeHash('cellmesh.scripted.v0');
@@ -123,7 +129,7 @@ function buildScriptedPayload(tamper: boolean): Uint8Array {
 
 function buildFrame(tamper: boolean): Buffer {
   const payload = buildScriptedPayload(tamper);
-  const cell = mintCell(SCRIPTED_TYPE, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(SCRIPTED_TYPE, payload, OWNER, BigInt(Date.now()), DOMAIN.meshScript);
   const sig = signCell(cell, WALLET); // frame sig over the final cell — valid in BOTH cases
   return Buffer.from(frameCell(cell, sig));
 }

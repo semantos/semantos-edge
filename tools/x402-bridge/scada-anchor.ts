@@ -15,6 +15,7 @@
  */
 
 import { mintCell, typeHash, writeU32LE, writeU64LE } from './cell-codec.js';
+import { DOMAIN } from '../domains.js';
 import { createAction, rawTxHexFromCreateAction, getPublicKey, type CreateActionResult } from './metanet.js';
 import { broadcastTxHex } from './arc.js';
 
@@ -40,7 +41,7 @@ export function encodeScadaCell(ev: ScadaEvent, ownerId: Uint8Array, tsMs: numbe
   writeU32LE(p, 17, ev.value >>> 0);
   writeU32LE(p, 21, ev.reading >>> 0);
   writeU64LE(p, 25, BigInt(tsMs));
-  return mintCell(SCADA_EVENT_TYPE, p, ownerId, BigInt(tsMs));
+  return mintCell(SCADA_EVENT_TYPE, p, ownerId, BigInt(tsMs), DOMAIN.meshTelemetry);
 }
 
 /** PushDrop locking script (hex): PUSHDATA2(cell) OP_DROP PUSH(leafPk) OP_CHECKSIG. */

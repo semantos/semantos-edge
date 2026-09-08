@@ -228,7 +228,8 @@ if (import.meta.main) {
   console.log('state[0] =', prevHex.slice(0, 32) + '...');
   console.log('state[1] =', nextHex.slice(0, 32) + '...');
 
-  // Demo hex privkey (same as mesh-control.ts WALLET for testing)
+  // Demo hex privkey for this local self-test only. NOT the mesh signing key
+  // any more — that is signer.ts, and it is the fleet operator root.
   const dummyWif = '0000000000000000000000000000000000000000000000000000000000000042';
   const r1 = await validateMncaTransition({
     prev_state: prevHex, next_state: nextHex,

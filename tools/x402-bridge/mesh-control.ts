@@ -18,12 +18,15 @@
  */
 
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { startSigner, checkAgainstFirmware } from './signer.js';
 import { openSync, writeSync, closeSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PrivateKey, ECDSA, BigNumber } from '@bsv/sdk';
 import { mintCell, signCell, typeHash, writeU16LE, writeU32LE, sha256, ecdsaDer, buildActuatorActivate, type ActuatorOffer } from './cell-codec.js';
 import { frameCell } from './serial-mesh.js';
+import { domainForType, KNOWN_CELL_TYPES } from './cell-domains.js';
+import { DOMAIN } from '../domains.js';
 import { getPublicKey, createSignature, createAction, rawTxHexFromCreateAction, p2pkhScriptHexFromPubkey, DEFAULT_ORIGIN, METANET_BASE } from './metanet.js';
 import { broadcastTxHex } from './arc.js';
 import { encodeScadaCell, anchorScadaCell, deriveScadaLeaf, SCADA_ACTION } from './scada-anchor.js';
@@ -36,14 +39,38 @@ import { validateMncaTransition, type ValidateRequest } from './mnca-oracle.js';
 const flag = (n: string, d?: string) => { const i = process.argv.indexOf(n); return i >= 0 ? process.argv[i + 1] : d; };
 const httpPort = Number(flag('--http-port', '4040'));
 const injectPort = flag('--inject-port', '/dev/cu.usbmodem21201')!;
-// Forward cells must be injected from a port != segments[0] device (that device
-// broadcasts via ESP-NOW and never receives its own broadcast). Default: MAC_A.
-const fwdInjectPort = flag('--forward-inject-port', '/dev/cu.usbmodem21301')!;
+// Forward cells must be injected from a port != segments[0] device: a board
+// broadcasts over ESP-NOW and never receives its own broadcast, so injecting a
+// forward cell into the very board it is addressed to means nobody processes it.
+//
+// segments[0] is MAC_B, so this must NOT be MAC_B's port. The default said
+// MAC_A in the comment and named MAC_B's port (…21301) in the code — the
+// comment was right and the value was wrong, and the result was a forward cell
+// that every board correctly ignored. Verified on hardware: with …21201 the
+// cell reaches MAC_B and relays; with …21301 it goes nowhere.
+const fwdInjectPort = flag('--forward-inject-port', '/dev/cu.usbmodem21201')!;
 const tailPorts = (flag('--tail', '/dev/cu.usbmodem21301,/dev/cu.usbmodem21401')!).split(',').filter(Boolean);
 const baud = flag('--baud', '115200')!;
 const WEB = join(dirname(fileURLToPath(import.meta.url)), 'web', 'control.html');
 
-const WALLET = new PrivateKey('0000000000000000000000000000000000000000000000000000000000000042', 16);
+// ── Two keys, two jobs. Do not merge them. ──────────────────────────────────
+//
+// WALLET signs CELLS. A device checks every signed cell against the trust
+// anchor compiled into its firmware, so this must equal that anchor — the
+// fleet operator root by default. See signer.ts.
+const signerInfo = startSigner();
+const WALLET = signerInfo.key;
+
+// CHAIN_WALLET funds and settles ON-CHAIN. openChannel() locks real sats to
+// its pubkey and settleChannel() spends them, so it must stay wherever the
+// money already is — moving it with the signing key would strand any balance
+// at the old address. It is deliberately the original demo key, and it is only
+// reachable behind --real-payment.
+const CHAIN_WALLET = new PrivateKey(
+  process.env.MESH_CHAIN_KEY_HEX?.trim()
+    ?? '0000000000000000000000000000000000000000000000000000000000000042',
+  16,
+);
 const WALLET_PUB = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex'));
 const OWNER = WALLET_PUB.subarray(0, 16);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -297,7 +324,7 @@ function buildForwardV1Payload(
 //   48-319 hop_commitments[4][68] — same layout as v1 per-hop slots
 //   (320-767 unused)
 function buildForwardV2PayloadA(
-  flowId: Uint8Array,       // 16 bytes
+  flowId: Uint8Array,       // 16 bytes — the Cell B binding, see routingFlowId
   hopVerb: number,
   segmentCount: number,     // total_hops = segments_remaining at source
   innerPayload: Uint8Array, // ≤744 bytes
@@ -313,6 +340,22 @@ function buildForwardV2PayloadA(
   if (innerPayload.length > 0) buf.set(innerPayload, V2_HEADER);
   return buf;
 }
+
+/**
+ * The flow_id a Cell B payload must carry — mirrors cm_routing_cont_flow_id.
+ *
+ * Cell A is signed and Cell B is not, and Cell B holds the route and the
+ * payment claims. flow_id is already 16 bytes at offset 0 of both cells and
+ * already inside the signed Cell A, and the device already refuses a pair whose
+ * flow_ids differ. Defining it this way turns that existing check into the
+ * binding without spending a byte of wire.
+ *
+ * Hashed from offset 16 (past flow_id itself, or the definition is circular) to
+ * 320, which is exactly the range the device's decoder reads.
+ */
+const ROUTING_USED_BYTES = 320;
+const routingFlowId = (payloadB: Uint8Array): Uint8Array =>
+  sha256(payloadB.subarray(16, ROUTING_USED_BYTES)).subarray(0, 16);
 
 function buildForwardV2PayloadB(
   flowId: Uint8Array,       // 16 bytes — same as Cell A's flow_id
@@ -366,13 +409,13 @@ async function injectCellSig(cell: Uint8Array, sig: Uint8Array, port = injectPor
   });
 }
 async function inject(typeHashBytes: Uint8Array, payload: Uint8Array, port = injectPort): Promise<void> {
-  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()), domainForType(typeHashBytes));
   await injectCellSig(cell, signCell(cell, WALLET), port);
 }
 
 /** Inject a cell signed with an explicit key (for capability-gated relay keys). */
 async function injectWithKey(typeHashBytes: Uint8Array, payload: Uint8Array, signingKey: PrivateKey, port = injectPort): Promise<void> {
-  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()), domainForType(typeHashBytes));
   await injectCellSig(cell, signCell(cell, signingKey), port);
 }
 
@@ -437,12 +480,113 @@ async function scadaControlAndLog(tag: string, durationMs: number): Promise<{ tx
 // ── per-device status (liveness + inferred LED) ──────────────────────
 // Port suffix → known forward-demo role (fixed MAC assignment).
 const ROLE: Record<string, string> = { '21301': 'A·originator', '21201': 'B·relay', '21401': 'C·destination' };
-interface DevState { lastSeen: number; ledUntil: number; rx: number; }
+// ── Authorisation state, observed ────────────────────────────────────
+//
+// A device never answers a query — it only narrates. So everything below is
+// parsed out of the serial the control plane already tails. That makes it an
+// OBSERVATION, not a reading: a board that has said nothing since boot shows an
+// empty grant list whether or not it holds one, and /authz labels it as such
+// rather than implying the table is empty.
+//
+// The point of collecting it is the thing that is genuinely hard without it:
+// six sequential gates all refuse a cell, and from outside the board every
+// refusal looks the same. Naming which gate, and for channel rejections which
+// code, is the difference between a minute and an afternoon.
+
+interface Grant {
+  channelId: string;     // first 4 bytes, as the firmware prints them
+  edge: string;          // first 4 bytes of the relay pubkey
+  domain: string;        // 0x-prefixed, as printed
+  at: number;
+}
+interface Refusal {
+  gate: string;          // which of the sequential checks said no
+  detail: string;        // the discriminator, e.g. err_stale_seq
+  count: number;
+  last: number;
+  line: string;          // the raw log line, so nothing is lost in the mapping
+}
+interface DevState {
+  lastSeen: number; ledUntil: number; rx: number;
+  /// False once the tail process has exited — usually a board reset.
+  tailAlive: boolean;
+  mac?: string;
+  policyDomain?: string;      // what cm_cap_set_domain was called with
+  engine?: boolean;           // did the cell engine load this boot
+  grants: Grant[];
+  refusals: Refusal[];
+}
 const devices = new Map<string, DevState>();
+
+/**
+ * cm_channel_apply_commitment's return codes, by name.
+ *
+ * The firmware logs `rc=-3` and nothing else, and -3 versus -6 is the
+ * difference between "your bridge restarted its counter" and "you left
+ * expiry_ms zero". Both cost an hour to recognise from the number alone.
+ */
+const CHANNEL_RC: Record<string, string> = {
+  '-1': 'err_bad_state — the channel is not open',
+  '-2': 'err_bad_id — commitment names a different channel',
+  '-3': 'err_stale_seq — seq already used; a restarted bridge counter looks like this',
+  '-4': 'err_non_mono — device_share went backwards',
+  '-5': 'err_overflow — share exceeds channel capacity',
+  '-6': 'err_expired — commitment expiry_ms is in the past (zero counts as past)',
+  '-7': 'err_seq_match — seq repeated with different contents',
+};
+
+function noteRefusal(d: DevState, gate: string, detail: string, line: string): void {
+  const hit = d.refusals.find((r) => r.gate === gate && r.detail === detail);
+  if (hit) { hit.count++; hit.last = Date.now(); hit.line = line; return; }
+  d.refusals.push({ gate, detail, count: 1, last: Date.now(), line });
+  if (d.refusals.length > 32) d.refusals.shift();
+}
+
 function trackDevice(label: string, ln: string): void {
   let d = devices.get(label);
-  if (!d) { d = { lastSeen: 0, ledUntil: 0, rx: 0 }; devices.set(label, d); }
+  if (!d) { d = { lastSeen: 0, ledUntil: 0, rx: 0, tailAlive: true, grants: [], refusals: [] }; devices.set(label, d); }
   d.lastSeen = Date.now();
+  d.tailAlive = true;
+
+  // ── identity and policy ──────────────────────────────────────────────
+  const mac = ln.match(/wifi:mode : sta \(([0-9a-f:]{17})\)/);
+  if (mac) d.mac = mac[1];
+  const pol = ln.match(/cap table: device domain (0x[0-9a-f]{8})/);
+  if (pol) { d.policyDomain = pol[1]; d.grants = []; d.refusals = []; }  // fresh boot
+  if (ln.includes('cell-engine up')) d.engine = true;
+  if (ln.includes('semantos_init failed')) d.engine = false;
+
+  // ── grants ───────────────────────────────────────────────────────────
+  const g = ln.match(/CAP cert installed: ch=([0-9a-f]+)\.\.\. edge=([0-9a-f]+)\.\.\. domain=(0x[0-9a-f]{8})/);
+  if (g) {
+    d.grants = d.grants.filter((x) => !(x.channelId === g[1] && x.domain === g[3]));
+    d.grants.push({ channelId: g[1], edge: g[2], domain: g[3], at: Date.now() });
+  }
+
+  // ── refusals, by gate, in the order the device applies them ──────────
+  let m: RegExpMatchArray | null;
+  if ((m = ln.match(/CAP cert REFUSED: wrong domain (0x[0-9a-f]+), this device is (0x[0-9a-f]+)/))) {
+    noteRefusal(d, 'device-domain policy', `cert domain ${m[1]} != device ${m[2]}`, ln);
+  } else if ((m = ln.match(/malformed route \(total_hops=(\d+)\)/))) {
+    noteRefusal(d, 'route', `total_hops=${m[1]} exceeds the segment array`, ln);
+  } else if (ln.includes("flow_id binding")) {
+    noteRefusal(d, 'A/B binding', 'Cell B routing does not hash to the flow_id Cell A signed', ln);
+  } else if ((m = ln.match(/no relay grant for domain (0x[0-9a-f]+)/))) {
+    noteRefusal(d, 'capability', `no grant in ${m[1]} — this board was never provisioned for it`, ln);
+  } else if ((m = ln.match(/no cert for channel ([0-9a-f]+)/))) {
+    noteRefusal(d, 'capability', `no cert for channel ${m[1]}`, ln);
+  } else if (ln.includes('sig INVALID')) {
+    noteRefusal(d, 'signature',
+      ln.includes('wallet pubkey') ? 'not signed by the trust anchor'
+                                   : 'not signed by the key the capability cert grants', ln);
+  } else if (ln.includes('cert_hash mismatch')) {
+    noteRefusal(d, 'BRC-108 binding', 'commitment names a different cert than the one installed', ln);
+  } else if ((m = ln.match(/CHANNEL REJECT hop=(\d+) rc=(-?\d+)/))) {
+    noteRefusal(d, 'channel', CHANNEL_RC[m[2]] ?? `rc=${m[2]}`, ln);
+  } else if ((m = ln.match(/routing\.cont: no matching Cell A \(flow=([0-9a-f]+)\)/))) {
+    noteRefusal(d, 'A/B pairing', `no buffered Cell A for flow ${m[1]}`, ln);
+  }
+
   const rxm = ln.match(/rx_total=(\d+)/); if (rxm) d.rx = Number(rxm[1]);
   // Infer LED-on from logged blink/actuator durations (sub-1s blinks are
   // unlogged by the firmware, so this catches >=1s blinks + actuations).
@@ -464,6 +608,14 @@ for (const port of tailPorts) {
   spawnSync('stty', ['-f', port, baud, 'raw', '-echo'], { stdio: 'ignore' });
   const label = port.split('modem')[1] ?? port;
   const c = spawn('cat', [port]) as ChildProcessWithoutNullStreams;
+  // A board reset tears the tty down and takes `cat` with it. Without noticing,
+  // /authz would go on serving that board's last known state as though it were
+  // current — which is worse than reporting nothing, because it reads as a
+  // healthy device.
+  c.on('exit', () => {
+    const dead = devices.get(label);
+    if (dead) dead.tailAlive = false;
+  });
   let buf = '';
   c.stdout.on('data', (d: Buffer) => {
     buf += d.toString();
@@ -602,6 +754,14 @@ const server = Bun.serve({
           // EVAL_RULES: fire existing rules at each hop (inner_payload empty)
           desc = 'EVAL_RULES (blink wave)';
         }
+        // forward.v0 is now authorised as well as authenticated: a device
+        // refuses to relay unless it holds a live relay grant. Same auto-inject
+        // and same 3000 ms settle as the v1/v2 routes.
+        if (!s_capCertInjected) {
+          await injectCapabilityCert(s_currentChannelId, s_currentChannelIdHex, fwdInjectPort);
+          s_capCertInjected = true;
+          await sleep(3000);
+        }
         const fwdPayload = buildForwardPayload(hopVerb, [MAC_B, MAC_C], innerPayload);
         await inject(TYPES.forward, fwdPayload, fwdInjectPort);
         const via = fwdInjectPort.split('/').pop();
@@ -628,7 +788,27 @@ const server = Bun.serve({
         if (!s_capCertInjected) {
           await injectCapabilityCert(chId, chHex, fwdInjectPort);
           s_capCertInjected = true;
-          await sleep(300);  // give devices time to install before the first fwd.v1
+          // 3000 ms, not 300. Measured on two C6s against a freshly-reset board:
+          //
+          //    300 ms  -> the cert never arrives at all. The board logs only
+          //               "forward.v1: no cert for channel … — DROP", so the
+          //               symptom points at the capability table and the cause
+          //               is two cells too close together.
+          //   1500 ms  -> same failure.
+          //   3000 ms  -> cert verified + installed, then forward.v1 CAP-verified,
+          //               channel OK, relayed onward. Reproducible.
+          //
+          // Why it needs seconds: cm_sig_verify is ~267 ms on this chip
+          // (main.c's own boot bench prints 267749 us/verify), the receive path
+          // runs in the WiFi task, and injectCellSig sends each cell TWICE — so
+          // a cert costs two verifies plus an install, during which the radio
+          // callback is blocked and the next cell's ESP-NOW frames are dropped.
+          // Reassembly has a 1000 ms TTL, so a single lost frame loses the cell.
+          //
+          // This is the mesh's real ceiling, not a fudge: roughly one signed
+          // cell per second, which is the same ~270 ms/verify budget that keeps
+          // telemetry unsigned on the hot path.
+          await sleep(3000);
         }
         // Advance channel state for B (hop 0) and C (hop 1)
         fwdV1Ch.B.seq++; fwdV1Ch.B.share += FWD_V1_HOP_COST;
@@ -670,7 +850,7 @@ const server = Bun.serve({
           if (crossed) {
             broadcast(`[ctl] CHANNEL THRESHOLD REACHED — settling on chain …`);
             try {
-              const settleTxid = await settleChannel(activeChannel, WALLET);
+              const settleTxid = await settleChannel(activeChannel, CHAIN_WALLET);
               broadcast(`[ctl] CHANNEL SETTLED → txid ${settleTxid} (WoC: https://whatsonchain.com/tx/${settleTxid})`);
               // Emit cellmesh.channel_settle.v0 into the mesh so devices log it.
               // Retry 3× with 600ms gap to survive ESP-NOW packet loss.
@@ -753,7 +933,11 @@ const server = Bun.serve({
         if (!s_capCertInjected) {
           await injectCapabilityCert(chId, chHex, fwdInjectPort);
           s_capCertInjected = true;
-          await sleep(300);
+          // 3000 ms for the same measured reason as the forward.v1 route: at
+          // ~267 ms per cm_sig_verify, with each cell sent twice, a cert costs
+          // the receiver more than a second of blocked radio callback and the
+          // next cell's frames are dropped.
+          await sleep(3000);
         }
 
         // Advance per-hop channel state
@@ -785,19 +969,44 @@ const server = Bun.serve({
         const flowId = sha256(seed).subarray(0, 16);
 
         // Build Cell A and Cell B payloads
-        const payloadA = buildForwardV2PayloadA(flowId, hopVerb, 2 /* B+C */, innerPayload);
-        const payloadB = buildForwardV2PayloadB(flowId, [MAC_B, MAC_C], commitments);
-
-        // Sign Cell A with the BRC-42 relay key; Cell B is unsigned (routing mutates)
         const relayKey    = getRelayKey(chHex);
         const relayWallet = new PrivateKey(Buffer.from(relayKey.sk).toString('hex'), 16);
-        const cellA = mintCell(TYPES.forwardV2,     payloadA, OWNER, BigInt(Date.now()));
-        const cellB = mintCell(TYPES.routingContV0, payloadB, OWNER, BigInt(Date.now()));
-        const sigA  = signCell(cellA, relayWallet);
-        const sigB  = new Uint8Array(64);  // Cell B unsigned (zeros)
+        // Both on the relay rail — the same flag the capability cert carries,
+        // or cm_cap_lookup misses and the device drops them.
+        //
+        // Cell B is built with a placeholder flow_id, then the real one is
+        // derived FROM its routing content and written back. The digest starts
+        // at offset 16, so writing flow_id into 0..16 afterwards cannot change
+        // it — that is what makes the definition non-circular.
+        const payloadB = buildForwardV2PayloadB(flowId, [MAC_B, MAC_C], commitments);
+        const boundFlowId = routingFlowId(payloadB);
+        payloadB.set(boundFlowId, 0);
+        const cellB    = mintCell(TYPES.routingContV0, payloadB, OWNER, BigInt(Date.now()), domainForType(TYPES.routingContV0));
+
+        const payloadA = buildForwardV2PayloadA(boundFlowId, hopVerb, 2 /* B+C */, innerPayload);
+        const cellA    = mintCell(TYPES.forwardV2, payloadA, OWNER, BigInt(Date.now()), domainForType(TYPES.forwardV2));
+        const sigA     = signCell(cellA, relayWallet);
+        const sigB     = new Uint8Array(64);  // Cell B carries no signature of its own
 
         await injectCellSig(cellA, sigA, fwdInjectPort);
-        await sleep(20);  // brief gap so devices receive Cell A first
+        // 2500 ms, not 20. Both hop-0 boards logged "routing.cont: no matching
+        // Cell A": Cell B arrived and Cell A never did, at 20 ms AND at 1500 ms.
+        //
+        // The cause is on the injecting board, not the air. With
+        // DEMO_SCRIPT_ONLY the serial injector does not broadcast immediately —
+        // it copies the cell into ONE static staging pair (s_demo_cell /
+        // s_demo_sig) and schedules a broadcast DEMO_BROADCAST_DELAY_MS = 1800 ms
+        // later. A second injection arriving inside that window overwrites the
+        // staged cell, so only the LAST one is ever transmitted.
+        //
+        // forward.v1 never noticed because injectCellSig sends ONE cell twice:
+        // the retry overwrites the original with an identical copy. v2 sends two
+        // DIFFERENT cells, so Cell A was silently replaced by Cell B every time.
+        //
+        // So the gap has to clear the staging window, not just the air. The
+        // burst slot has no TTL (cm_fwdv2_burst_slot_t is
+        // {primary, primary_cell, primary_sig, valid}), so Cell A waits happily.
+        await sleep(2500);
         await injectCellSig(cellB, sigB, fwdInjectPort);
 
         const certHashHex = certHashBytes ? Buffer.from(certHashBytes).toString('hex').slice(0, 8) + '...' : 'none';
@@ -812,7 +1021,7 @@ const server = Bun.serve({
           if (crossed) {
             broadcast(`[ctl] CHANNEL THRESHOLD REACHED (v2 burst) — settling on chain …`);
             try {
-              const settleTxid = await settleChannel(activeChannel, WALLET);
+              const settleTxid = await settleChannel(activeChannel, CHAIN_WALLET);
               broadcast(`[ctl] CHANNEL SETTLED → txid ${settleTxid} (WoC: https://whatsonchain.com/tx/${settleTxid})`);
               const sp = buildSettlePayload(activeChannel, settleTxid);
               for (let ri = 0; ri < 3; ri++) {
@@ -851,7 +1060,7 @@ const server = Bun.serve({
       }
       try {
         broadcast(`[ctl] opening BSV channel: funding ${CHANNEL_FUNDING_SATS} sats via Metanet Desktop…`);
-        activeChannel = await openChannel(WALLET, { metanetBase: metanetBase, origin: metanetOrigin });
+        activeChannel = await openChannel(CHAIN_WALLET, { metanetBase: metanetBase, origin: metanetOrigin });
         // Reset in-memory forward.v1/v2 counters + capability cert flag so the new
         // channel gets a fresh cert with its derived relay key.
         fwdV1Ch.B.seq = 0; fwdV1Ch.B.share = 0;
@@ -896,6 +1105,90 @@ const server = Bun.serve({
         return json({ ok: false, error: (e as Error).message }, 500);
       }
     }
+    // ── GET /authz — who may act, and why anything was refused ───────────
+    //
+    // Two views side by side: what this control plane ISSUED, and what the
+    // devices were OBSERVED to install or refuse. The gap between them is the
+    // interesting part, and it is the thing that is invisible from either side
+    // alone — a cert the bridge is certain it sent, that no board ever
+    // installed, looks identical to a working fleet until traffic drops.
+    //
+    // Refusals are grouped by GATE. A cell passes six sequential checks and
+    // from outside the board every failure looks the same; naming the gate, and
+    // for channel rejections decoding the rc, is the whole point.
+    if (req.method === 'GET' && url.pathname === '/authz') {
+      const check = checkAgainstFirmware(signerInfo);
+      const rails = Object.entries(DOMAIN).map(([name, value]) => ({
+        name,
+        value: `0x${(value >>> 0).toString(16).padStart(8, '0')}`,
+        cellTypes: KNOWN_CELL_TYPES.filter((t) => domainForType(typeHash(t)) === value),
+      }));
+
+      const issued = [...s_certHashes.entries()].map(([chHex, hash]) => ({
+        channelId: chHex.slice(0, 8),
+        domain: `0x${DOMAIN.meshRelay.toString(16).padStart(8, '0')}`,
+        edge: Buffer.from(s_relayKeys.get(chHex)?.pk ?? new Uint8Array()).toString('hex').slice(0, 8),
+        certHash: Buffer.from(hash).toString('hex').slice(0, 8),
+      }));
+
+      const seen = [...devices.entries()].map(([label, d]) => ({
+        port: label,
+        role: ROLE[label] ?? 'unknown',
+        mac: d.mac ?? null,
+        // Freshness, not just presence. State parsed from serial is only as
+        // current as the last line that arrived, and a dead tail keeps its
+        // last words indefinitely.
+        lastSeenSecondsAgo: d.lastSeen ? Math.round((Date.now() - d.lastSeen) / 1000) : null,
+        tailAlive: d.tailAlive,
+        stale: !d.tailAlive || d.lastSeen === 0,
+        engineLoaded: d.engine ?? null,
+        policyDomain: d.policyDomain ?? null,
+        grants: d.grants,
+        refusals: [...d.refusals].sort((x, y) => y.last - x.last),
+      }));
+
+      // Discrepancies worth surfacing rather than leaving to be inferred.
+      const gaps: string[] = [];
+      if (!check.matches) {
+        gaps.push('signer does not match the firmware anchor — every signed cell will be refused');
+      }
+      for (const dev of seen) {
+        if (!dev.tailAlive) {
+          gaps.push(`${dev.port}: serial tail has exited — this device's state is frozen at its last line, not current`);
+          continue;
+        }
+        if (dev.stale) continue;
+        if (dev.engineLoaded === false) {
+          gaps.push(`${dev.port}: cell engine failed to load — scripted cells will be rejected`);
+        }
+        for (const iss of issued) {
+          const held = dev.grants.some((g) => g.channelId.startsWith(iss.channelId.slice(0, 8)));
+          if (!held) {
+            gaps.push(`${dev.port}: no observed grant for channel ${iss.channelId} that this bridge issued`);
+          }
+        }
+        if (dev.policyDomain && issued.length &&
+            dev.policyDomain !== issued[0].domain) {
+          gaps.push(`${dev.port}: device policy ${dev.policyDomain} but certs are issued on ${issued[0].domain} — installs will be refused`);
+        }
+      }
+
+      return json({
+        ok: true,
+        anchor: {
+          signer: signerInfo.publicKeyHex,
+          source: signerInfo.source,
+          firmware: check.firmwareAnchorHex,
+          matches: check.matches,
+        },
+        rails,
+        issued,
+        devices: seen,
+        gaps,
+        note: 'devices are OBSERVED from serial, not queried — a silent board reports nothing, not nothing-held',
+      });
+    }
+
     // ── GET /channel-state — current channel status ──────────────────────
     if (req.method === 'GET' && url.pathname === '/channel-state') {
       if (!activeChannel) return json({ ok: true, channel: null, note: 'no channel open — POST /open-channel first' });

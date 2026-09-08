@@ -18,6 +18,7 @@
  */
 
 import { PrivateKey } from '@bsv/sdk';
+import { startSigner } from './signer.js';
 import {
   type ActuatorOffer,
   sha256,
@@ -28,7 +29,11 @@ import { getPublicKey, p2pkhScriptHexFromPubkey, METANET_BASE, DEFAULT_ORIGIN } 
 import { Brc29OnchainVerifier } from './onchain-payment.js';
 
 // ── Provisioned offer (matches sign-cell-deck.ts RENTABLE_* constants) ──
-const WALLET = new PrivateKey('0000000000000000000000000000000000000000000000000000000000000042', 16);
+// Cell authority. The device verifies every signed cell against the trust
+// anchor in its firmware, so this must BE that anchor — it is the fleet
+// operator root by default. Nothing here spends on-chain, so there is no
+// second key to keep apart.
+const WALLET = startSigner().key;
 const WALLET_PUB = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex'));
 const RENTABLE_LOCK = (() => {
   const b = new Uint8Array(35);

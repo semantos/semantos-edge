@@ -57,6 +57,42 @@ static void test_budget(void) {
     // Forward.v2 gives 744B inner — 296 more than forward.v1's 448B
     CHECK(CM_FORWARD_V2_MAX_INNER_BYTES - 448u == 296u);
     CHECK(CM_FORWARD_V2_HEADER_BYTES == 24u);
+    // The Cell A <-> Cell B binding costs NO wire space: it rides in flow_id,
+    // which both cells already carry at offset 0.
+    CHECK(CM_ROUTING_CONT_FLOW_BINDING_OFF == 16u);
+}
+
+static void test_flow_id_binding(void) {
+    printf("  test_flow_id_binding\n");
+    uint8_t pb[CM_ROUTING_CONT_USED_BYTES];
+    memset(pb, 0, sizeof(pb));
+    pb[24] = 0xbb;                                    // a segment byte
+    pb[48 + 20] = 10;                                 // hop 0 device_share
+
+    uint8_t base[16], again[16];
+    CHECK(cm_routing_cont_flow_id(pb, sizeof(pb), base) == 0);
+    CHECK(cm_routing_cont_flow_id(pb, sizeof(pb), again) == 0);
+    CHECK(memcmp(base, again, 16) == 0);              // deterministic
+
+    // Writing the flow_id into bytes 0..16 must not move the digest, or the
+    // definition would be circular and unsatisfiable.
+    memcpy(pb, base, 16);
+    CHECK(cm_routing_cont_flow_id(pb, sizeof(pb), again) == 0);
+    CHECK(memcmp(base, again, 16) == 0);
+
+    // Changing the ROUTE changes it.
+    pb[24] = 0xbc;
+    CHECK(cm_routing_cont_flow_id(pb, sizeof(pb), again) == 0);
+    CHECK(memcmp(base, again, 16) != 0);
+    pb[24] = 0xbb;
+
+    // Changing a PAYMENT CLAIM changes it — this is the attack it stops.
+    pb[48 + 20] = 99;
+    CHECK(cm_routing_cont_flow_id(pb, sizeof(pb), again) == 0);
+    CHECK(memcmp(base, again, 16) != 0);
+
+    // A short payload is refused, not hashed partially.
+    CHECK(cm_routing_cont_flow_id(pb, sizeof(pb) - 1, again) == -1);
 }
 
 static void test_cell_a_encode_decode(void) {
@@ -364,6 +400,7 @@ int main(void) {
     printf("=== test_cell_forward_v2 ===\n");
 
     test_budget();
+    test_flow_id_binding();
     test_cell_a_encode_decode();
     test_cell_a_max_payload();
     test_cell_a_overflow_rejected();

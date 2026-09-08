@@ -15,6 +15,7 @@
  */
 
 import { PrivateKey, ECDSA, BigNumber, Hash } from '@bsv/sdk';
+import { DOMAIN } from '../domains.js';
 import {
   bip143Sighash, ecdsaDer, mintCell, signCell,
   writeU16LE, writeU32LE, writeU64LE, ACTUATOR_ACTIVATE_TYPE,
@@ -89,7 +90,7 @@ export function buildCapabilityInterlockActuator(opts: {
   payload.set(opts.offerId, off); off += 16;
   writeU32LE(payload, off, opts.counter); off += 4;
 
-  const cell = mintCell(ACTUATOR_ACTIVATE_TYPE, payload, opts.ownerId, opts.timestampMs);
+  const cell = mintCell(ACTUATOR_ACTIVATE_TYPE, payload, opts.ownerId, opts.timestampMs, DOMAIN.meshControl);
   return { payload, cell, sig: signCell(cell, opts.walletKey) };
 }
 
@@ -152,6 +153,6 @@ export function buildInterlockActuator(opts: {
   payload.set(opts.offerId, off); off += 16;
   writeU32LE(payload, off, opts.counter); off += 4;
 
-  const cell = mintCell(ACTUATOR_ACTIVATE_TYPE, payload, opts.ownerId, opts.timestampMs);
+  const cell = mintCell(ACTUATOR_ACTIVATE_TYPE, payload, opts.ownerId, opts.timestampMs, DOMAIN.meshControl);
   return { payload, cell, sig: signCell(cell, opts.walletKey) };
 }

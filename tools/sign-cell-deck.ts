@@ -22,6 +22,8 @@
  */
 
 import { PrivateKey, ECDSA, BigNumber } from '@bsv/sdk';
+import { startSigner } from './x402-bridge/signer.js';
+import { DOMAIN } from './domains.js';
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -33,6 +35,7 @@ const PAYLOAD_SIZE = 768;
 const CELL_VERSION = 2;
 const MAGIC = [0xDEADBEEF, 0xCAFEBABE, 0x13371337, 0x42424242];
 
+const OFF_FLAGS = 24;
 const OFF_LINEARITY = 16;
 const OFF_VERSION = 20;
 const OFF_TYPE_HASH = 30;
@@ -78,7 +81,13 @@ const KIND_ACTUATOR_ACTIVATE  = 10;
 // ── Demo wallet keypair ──────────────────────────────────────────────
 // Committed deliberately. This IS the wallet's identity — it's not
 // supposed to be on the device. Rotate when moving past demo mode.
-const WALLET_PRIVKEY_HEX = '0000000000000000000000000000000000000000000000000000000000000042';
+// The deck's cells are broadcast by devices and verified by their PEERS against
+// the trust anchor compiled into firmware. Signing with a key that is not that
+// anchor produces 185 cells that every board silently refuses — which is what
+// the checked-in deck was, once USE_FLEET_ANCHOR flipped to 1.
+//
+// So the deck signs with whatever signer.ts resolves: the fleet operator root by
+// default, or MESH_SIGNER=legacy for firmware still built with the old anchor.
 
 // ── Devices: hardcoded MACs (matching the forward-visual demo) ────────
 const DEVICE_MACS: ReadonlyArray<{ name: string; mac: number[] }> = [
@@ -150,19 +159,32 @@ const ACTUATOR_OFFER_TYPE     = typeHash('cellmesh.actuator_offer.v0');
 const ACTUATOR_ACTIVATE_TYPE  = typeHash('cellmesh.actuator_activate.v0');
 
 // ── Wallet key ───────────────────────────────────────────────────────
-const WALLET_KEY = new PrivateKey(WALLET_PRIVKEY_HEX, 16);
+const WALLET_KEY = startSigner().key;
 const WALLET_PUBKEY_COMP_HEX = WALLET_KEY.toPublicKey().toString();  // 66-char compressed hex
 const WALLET_PUBKEY = new Uint8Array(Buffer.from(WALLET_PUBKEY_COMP_HEX, 'hex'));
 // Use first 16 bytes of compressed pubkey as wallet's owner-id tag.
 const WALLET_OWNER_ID = WALLET_PUBKEY.subarray(0, 16);
 
-const PROVISIONING_TIMESTAMP_MS = BigInt(Date.now());
+// Pinned, not Date.now(). Every cell in a deck shares this stamp, and it is
+// covered by each cell's signature — so a clock-derived value made the artifact
+// unreproducible: regenerating produced 202 KB of diff that proved nothing and
+// hid whether anything real had changed. Override with DECK_TIMESTAMP_MS when a
+// deck genuinely needs a new provisioning epoch.
+const PROVISIONING_TIMESTAMP_MS = BigInt(
+  process.env.DECK_TIMESTAMP_MS ?? '1779435345626',
+);
 
 // ── Cell builder ─────────────────────────────────────────────────────
-function mintCell(typeHashBytes: Uint8Array, payload: Uint8Array): Uint8Array {
+//
+// `domainFlag` lands at header bytes 24-27, where OP_CHECKDOMAINFLAG reads it.
+// This builder is deliberately standalone (its own typeHash, its own offsets)
+// so the deck can be signed without pulling in the bridge, which is why the
+// rail is passed per call rather than looked up from cell-domains.ts.
+function mintCell(typeHashBytes: Uint8Array, payload: Uint8Array, domainFlag: number): Uint8Array {
   const cell = new Uint8Array(CELL_SIZE);
   for (let i = 0; i < 4; i++) writeU32LE(cell, i * 4, MAGIC[i]);
   writeU32LE(cell, OFF_LINEARITY, LINEARITY_AFFINE);
+  writeU32LE(cell, OFF_FLAGS, domainFlag);
   writeU32LE(cell, OFF_VERSION, CELL_VERSION);
   cell.set(typeHashBytes, OFF_TYPE_HASH);
   cell.set(WALLET_OWNER_ID, OFF_OWNER_ID);                  // wallet id, not device
@@ -372,7 +394,7 @@ function appendChannelCells(entries: Uint8Array[]) {
     const payload = encodeChannelOpen(CHANNEL_ID, DEVICE_C_PEER_PUBKEY,
                                        CHANNEL_INITIAL_LOCKTIME_MS,
                                        CHANNEL_TOTAL_CAPACITY);
-    const cell = mintCell(CHANNEL_OPEN_TYPE, payload);
+    const cell = mintCell(CHANNEL_OPEN_TYPE, payload, DOMAIN.meshPayment);
     entries.push(buildEntry(macA, KIND_CHANNEL_OPEN, cell, signCell(cell)));
   }
 
@@ -389,7 +411,7 @@ function appendChannelCells(entries: Uint8Array[]) {
                                              /* device_share */ i,
                                              /* user_share   */ CHANNEL_TOTAL_CAPACITY - i,
                                              expiry);
-    const cell = mintCell(CHANNEL_COMMITMENT_TYPE, payload);
+    const cell = mintCell(CHANNEL_COMMITMENT_TYPE, payload, DOMAIN.meshPayment);
     entries.push(buildEntry(macA, KIND_CHANNEL_COMMITMENT, cell, signCell(cell)));
   }
 
@@ -398,7 +420,7 @@ function appendChannelCells(entries: Uint8Array[]) {
   {
     const payload = encodeChannelClose(CHANNEL_ID, CHANNEL_COMMITMENT_COUNT,
                                         /* final_device_share */ CHANNEL_COMMITMENT_COUNT);
-    const cell = mintCell(CHANNEL_CLOSE_TYPE, payload);
+    const cell = mintCell(CHANNEL_CLOSE_TYPE, payload, DOMAIN.meshPayment);
     entries.push(buildEntry(macA, KIND_CHANNEL_CLOSE, cell, signCell(cell)));
   }
 }
@@ -463,7 +485,7 @@ function appendActuatorCells(entries: Uint8Array[], dev: { name: string; mac: nu
       writeU64LE(payload, off, RENTABLE_INPUT_VALUE);         off += 8;
       payload.set(RENTABLE_OFFER_ID, off);                    off += 16;
       writeU32LE(payload, off, i);                            off += 4;
-      const cell = mintCell(ACTUATOR_OFFER_TYPE, payload);
+      const cell = mintCell(ACTUATOR_OFFER_TYPE, payload, DOMAIN.meshControl);
       entries.push(buildEntry(dev.mac, KIND_ACTUATOR_OFFER, cell, signCell(cell)));
     }
   } else if (dev.name === 'A') {
@@ -513,7 +535,7 @@ function appendActuatorCells(entries: Uint8Array[], dev: { name: string; mac: nu
       writeU64LE(payload, off, RENTABLE_INPUT_VALUE);         off += 8;
       payload.set(RENTABLE_OFFER_ID, off);                    off += 16;
       writeU32LE(payload, off, i);                            off += 4;
-      const cell = mintCell(ACTUATOR_ACTIVATE_TYPE, payload);
+      const cell = mintCell(ACTUATOR_ACTIVATE_TYPE, payload, DOMAIN.meshControl);
       entries.push(buildEntry(dev.mac, KIND_ACTUATOR_ACTIVATE, cell, signCell(cell)));
     }
   }
@@ -526,16 +548,16 @@ function generateDeck(): Uint8Array {
     for (let i = 0; i < HEARTBEATS_PER_DEVICE; i++) {
       const payload = new Uint8Array(4);
       writeU32LE(payload, 0, i);
-      const cell = mintCell(HEARTBEAT_TYPE, payload);
+      const cell = mintCell(HEARTBEAT_TYPE, payload, DOMAIN.meshTelemetry);
       entries.push(buildEntry(dev.mac, KIND_HEARTBEAT, cell, signCell(cell)));
     }
     for (let i = 0; i < TAPS_PER_DEVICE; i++) {
       const payload = new Uint8Array(4);
       writeU32LE(payload, 0, i);
-      const cell = mintCell(TAP_TYPE, payload);
+      const cell = mintCell(TAP_TYPE, payload, DOMAIN.meshTelemetry);
       entries.push(buildEntry(dev.mac, KIND_TAP, cell, signCell(cell)));
     }
-    const ruleCell = mintCell(RULE_TYPE, encodeHotSwapRule());
+    const ruleCell = mintCell(RULE_TYPE, encodeHotSwapRule(), DOMAIN.meshControl);
     entries.push(buildEntry(dev.mac, KIND_HOT_SWAP_RULE, ruleCell, signCell(ruleCell)));
 
     // Channel cells live on device A only — append them on its pass so
@@ -681,7 +703,7 @@ function generateDeck(): Uint8Array {
         }
         writeU32LE(payload, off, i);             off += 4;
 
-        const cell = mintCell(SCRIPTED_TYPE, payload);
+        const cell = mintCell(SCRIPTED_TYPE, payload, DOMAIN.meshScript);
         entries.push(buildEntry(dev.mac, KIND_SCRIPTED, cell, signCell(cell)));
       }
     }
@@ -698,7 +720,7 @@ function generateDeck(): Uint8Array {
       payload[2] = 0x4B; // 'K'
       payload[3] = 0x01;
       writeU32LE(payload, 4, i);
-      const cell = mintCell(CONFIRMED_TAP_TYPE, payload);
+      const cell = mintCell(CONFIRMED_TAP_TYPE, payload, DOMAIN.meshControl);
       entries.push(buildEntry(dev.mac, KIND_CONFIRMED_TAP, cell, signCell(cell)));
     }
 

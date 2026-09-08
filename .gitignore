@@ -23,3 +23,7 @@ bun.lockb
 
 # OS
 .DS_Store
+tools/fleet-zig/spike/.zig-cache/
+tools/fleet-zig/spike/zig-out/
+tools/fleet-zig/.zig-cache/
+tools/fleet-zig/zig-out/

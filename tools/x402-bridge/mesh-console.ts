@@ -21,10 +21,12 @@
  */
 
 import readline from 'node:readline';
+import { startSigner } from './signer.js';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { PrivateKey } from '@bsv/sdk';
 import { mintCell, signCell, typeHash, writeU16LE, writeU32LE } from './cell-codec.js';
+import { domainForType } from './cell-domains.js';
 import { frameCell } from './serial-mesh.js';
 
 // ── config ───────────────────────────────────────────────────────────
@@ -33,7 +35,11 @@ const injectPort = flag('--inject-port', '/dev/cu.usbmodem21201')!; // device B
 const tailPorts = (flag('--tail', '/dev/cu.usbmodem21301,/dev/cu.usbmodem21401')!).split(',').filter(Boolean);
 const baud = flag('--baud', '115200')!;
 
-const WALLET = new PrivateKey('0000000000000000000000000000000000000000000000000000000000000042', 16);
+// Cell authority. The device verifies every signed cell against the trust
+// anchor in its firmware, so this must BE that anchor — it is the fleet
+// operator root by default. Nothing here spends on-chain, so there is no
+// second key to keep apart.
+const WALLET = startSigner().key;
 const OWNER = new Uint8Array(Buffer.from(WALLET.toPublicKey().toString(), 'hex')).subarray(0, 16);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -64,7 +70,7 @@ function encodeRule(triggerType: Uint8Array, blinkMs: number, quorum?: { n: numb
 
 // ── inject: sign + frame + paced write (+ retry for best-effort RF) ──
 async function inject(typeHashBytes: Uint8Array, payload: Uint8Array, label: string): Promise<void> {
-  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()));
+  const cell = mintCell(typeHashBytes, payload, OWNER, BigInt(Date.now()), domainForType(typeHashBytes));
   const sig = signCell(cell, WALLET);
   const frame = Buffer.from(frameCell(cell, sig));
   for (let r = 0; r < 2; r++) {
