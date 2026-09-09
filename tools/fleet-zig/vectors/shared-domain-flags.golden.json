@@ -1,0 +1,12 @@
+{
+  "$comment": "VENDORED snapshot of the domain-flag values fleet-zig SHARES with semantos-core (bands + ZONE_KEY). Source: semantos-core/core/constants/constants.json -> domainFlags. Fleet-specific flags (fleet_page 0x00f10000, fleet_device, org_member, mesh_*) are NOT here — they are fleet-owned and need no convergence. Provenance + re-vendor instructions in vectors/README.md. Design: semantos-core docs/design/IDENTITY-EDGE-CONVERGENCE.md (option D).",
+  "sharedDomainFlags": {
+    "ZONE_KEY": 14,
+    "plexusReservedMin": 1,
+    "plexusReservedMax": 255,
+    "extendedMin": 256,
+    "extendedMax": 65535,
+    "clientDefinedMin": 65536,
+    "clientDefinedMax": 4294967295
+  }
+}

@@ -110,3 +110,18 @@ allocator actually handed out:
 
 `check-recipe-interop.mjs` is the other direction: it feeds the SDK a recipe the
 Zig plane wrote and checks the burn survived. Run it with `bun run fleet:zig:interop`.
+
+## Cross-repo convergence vectors (option D)
+
+Per semantos-core `docs/design/IDENTITY-EDGE-CONVERGENCE.md`: these are **vendored
+snapshots** of surfaces the fleet plane shares with semantos-core, recorded here
+with their source + sha256 so a stale copy is visible. On a source change,
+re-vendor and bump the sha256; the parity conformances (`zig build test-bridge`,
+`zig build test-domain-flags`) then confirm this plane matches the new copy.
+
+| vector | source (semantos-core) | sha256 | asserted by |
+|---|---|---|---|
+| `fleet-bridge.golden.json` | `core/wallet/scripts/gen-fleet-bridge-kat.ts` → `tests/fixtures/fleet_bridge_kat.json` | `dfeddc123c064794b83e8ba12064d43e02810aa0efb07256555aeb7f14ea5d76` | `src/bridge.zig` (digest KAT + `BRIDGE_DOMAIN`/invoice) |
+| `shared-domain-flags.golden.json` | `core/constants/constants.json` → `domainFlags` (shared subset) | `fd300de03006bccd07a85a9f10c0532bef5580a50c7f11dc813f1d1a535c4a8f` | `test/domain_flags_conformance.zig` (`domains.zig` `zone` + bands) |
+
+The bridge fixture is parity-gated on the source side (`tests/gates/fleet-bridge-kat-current.test.ts`), so semantos-core's copy cannot drift from its generator; this plane's copy is the manual-port endpoint.
