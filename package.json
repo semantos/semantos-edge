@@ -11,6 +11,7 @@
   "scripts": {
     "observe": "bun tools/mesh-observer/server.ts",
     "observe:sim": "bun tools/mesh-observer/server.ts --sim 3",
+    "templog-bridge": "bun tools/templog-bridge/bridge.ts",
     "x402-bridge": "bun tools/x402-bridge/server.ts",
     "x402-bridge:mainnet": "bun tools/x402-bridge/server.ts --real-payment",
     "vm-demo": "bun tools/x402-bridge/scripted-vm-demo.ts",

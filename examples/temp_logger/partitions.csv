@@ -1,0 +1,9 @@
+# temp_logger — mesh_demo's layout plus a raw data partition for the reading log.
+# The 2 MB app partition fits WAMR + the cell engine; `templog` is a ring of
+# 16-byte records (docs/TEMP-LOGGER.md), 16,384 of them — about 11 days at one
+# reading a minute. The XIAO ESP32-C6 has 4 MB of flash.
+# Name,    Type, SubType,   Offset,   Size,     Flags
+nvs,       data, nvs,       0x9000,   0x6000,
+phy_init,  data, phy,       0xf000,   0x1000,
+factory,   app,  factory,   0x10000,  0x200000,
+templog,   data, undefined, 0x210000, 0x40000,

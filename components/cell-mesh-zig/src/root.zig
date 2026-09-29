@@ -10,6 +10,7 @@ pub const cell_frame = @import("cell_frame.zig");
 pub const cell_capability = @import("cell_capability.zig");
 pub const cell_rules = @import("cell_rules.zig");
 pub const cell_mnca = @import("cell_mnca.zig");
+pub const cell_templog = @import("cell_templog.zig");
 
 // Enrol every module's tests.
 //
@@ -30,6 +31,7 @@ test {
     _ = @import("cell_capability.zig");
     _ = @import("cell_rules.zig");
     _ = @import("cell_mnca.zig");
+    _ = @import("cell_templog_test.zig");
 }
 
 comptime {
@@ -114,4 +116,38 @@ comptime {
     _ = cell_mnca.cm_mnca_tile_hash;
     _ = cell_mnca.cm_mnca_quorum_init;
     _ = cell_mnca.cm_mnca_quorum_update;
+
+    _ = cell_templog.cm_crc8_maxim;
+    _ = cell_templog.cm_ds18b20_decode;
+    _ = cell_templog.cm_tlog_record_encode;
+    _ = cell_templog.cm_tlog_record_decode;
+    _ = cell_templog.cm_tlog_record_is_erased;
+    _ = cell_templog.cm_tlog_slot_for_seq;
+    _ = cell_templog.cm_tlog_erase_before_write;
+    _ = cell_templog.cm_tlog_init;
+    _ = cell_templog.cm_tlog_append;
+    _ = cell_templog.cm_tlog_skip_seq;
+    _ = cell_templog.cm_tlog_pending_first;
+    _ = cell_templog.cm_tlog_pending;
+    _ = cell_templog.cm_tlog_lost_through;
+    _ = cell_templog.cm_tlog_apply_ack;
+    _ = cell_templog.cm_tlog_recover_begin;
+    _ = cell_templog.cm_tlog_recover_feed;
+    _ = cell_templog.cm_tlog_recover_finish;
+    _ = cell_templog.cm_tlog_batch_begin;
+    _ = cell_templog.cm_tlog_batch_add;
+    _ = cell_templog.cm_tlog_batch_add_lost;
+    _ = cell_templog.cm_tlog_batch_count;
+    _ = cell_templog.cm_tlog_batch_used_bytes;
+    _ = cell_templog.cm_tlog_batch_decode_header;
+    _ = cell_templog.cm_tlog_batch_sample;
+    _ = cell_templog.cm_tlog_ack_encode;
+    _ = cell_templog.cm_tlog_ack_decode;
+    _ = cell_templog.cm_tlog_sched_init;
+    _ = cell_templog.cm_tlog_sched_should_send;
+    _ = cell_templog.cm_tlog_sched_on_sent;
+    _ = cell_templog.cm_tlog_sched_on_ack;
+    _ = cell_templog.cm_script_num_push;
+    _ = cell_templog.cm_tlog_policy_lock;
+    _ = cell_templog.cm_tlog_policy_unlock;
 }

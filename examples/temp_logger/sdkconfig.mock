@@ -1,0 +1,4 @@
+# Bench run without a probe: simulated readings every 10 s.
+#   idf.py -B build-mock -D SDKCONFIG=build-mock/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.mock" build
+CONFIG_TL_MOCK_PROBE=y
+CONFIG_TL_SAMPLE_INTERVAL_S=10
