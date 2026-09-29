@@ -19,6 +19,9 @@ bun.lockb
 .env.*
 !.env.example
 
+# Live temperature readings from tools/templog-bridge
+templog-readings.jsonl
+
 # Holds a spend key (WIF) for an unsettled UTXO — never commit
 .gated-spend-state.json
 
