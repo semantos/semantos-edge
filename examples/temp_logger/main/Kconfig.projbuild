@@ -1,0 +1,50 @@
+menu "Temp logger"
+
+    choice TL_ROLE
+        prompt "Role"
+        default TL_ROLE_NODE
+        help
+            A node rides in a box with the probe. A gateway sits on the
+            laptop's USB and hands batches to tools/templog-bridge.
+
+        config TL_ROLE_NODE
+            bool "Node: probe in a box, store and forward"
+        config TL_ROLE_GATEWAY
+            bool "Gateway: on the laptop, talks to the bridge"
+    endchoice
+
+    config TL_SAMPLE_INTERVAL_S
+        int "Seconds between readings"
+        default 60
+        range 5 3600
+
+    config TL_PROBE_GPIO
+        int "DS18B20 data GPIO (XIAO D0 = GPIO0; GPIO4 is only a back pad)"
+        default 0
+
+    config TL_LED_GPIO
+        int "Status LED GPIO (XIAO user LED = GPIO15, active low)"
+        default 15
+
+    config TL_POLICY_MIN_CENTI
+        int "Safe band, low end, in centi-degrees C"
+        default -200
+
+    config TL_POLICY_MAX_CENTI
+        int "Safe band, high end, in centi-degrees C (inclusive)"
+        default 2800
+
+    config TL_MAX_BACKOFF_S
+        int "Longest wait between unanswered sends, in seconds"
+        default 60
+        range 2 3600
+
+    config TL_MOCK_PROBE
+        bool "Simulate the probe (bench runs without a DS18B20)"
+        default n
+        help
+            Produces a slow sine around 16 C with a heat excursion to about
+            35 C every few hours, so the whole path can be filmed or tested
+            without hardware on the pin.
+
+endmenu

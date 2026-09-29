@@ -115,7 +115,14 @@ test "bridge digest KAT: fleet plane agrees with the shared fixture (+ order-ind
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, GOLDEN, .{});
     defer parsed.deinit();
     const root = parsed.value.object;
-    try std.testing.expectEqualStrings(BRIDGE_DOMAIN, root.get("algorithm").?.object.get("domain").?.string);
+    const algo = root.get("algorithm").?.object;
+    try std.testing.expectEqualStrings(BRIDGE_DOMAIN, algo.get("domain").?.string);
+    // The INVOICE too (not just the domain): fleet-zig verifies the wallet half
+    // by re-deriving page-0's child under this invoice, so a drift here would
+    // reject every live wallet half. Format: [<level>,"<protocol name>"].
+    const want_invoice = try std.fmt.allocPrint(alloc, "[{d},\"{s}\"]", .{ BRIDGE_INVOICE_LEVEL, BRIDGE_PROTOCOL_NAME });
+    defer alloc.free(want_invoice);
+    try std.testing.expectEqualStrings(want_invoice, algo.get("walletInvoice").?.string);
 
     const vectors = root.get("vectors").?.array;
     try std.testing.expect(vectors.items.len >= 1);

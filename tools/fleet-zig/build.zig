@@ -99,6 +99,23 @@ pub fn build(b: *std.Build) void {
     const run_bridge = b.addRunArtifact(bridge_test);
     b.step("test-bridge", "run the fleet↔wallet bridge digest KAT + round-trip").dependOn(&run_bridge.step);
 
+    // Edge convergence (IDENTITY-EDGE-CONVERGENCE §4): domains.zig's SHARED flag
+    // values match a vendored snapshot of semantos-core's constants.json, so the
+    // two registries cannot silently drift (the ZONE_KEY 0x0e hazard).
+    const domain_flags_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/domain_flags_conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    domain_flags_test.root_module.addImport("domains", domains_mod);
+    domain_flags_test.root_module.addAnonymousImport("shared_flags_golden", .{
+        .root_source_file = b.path("vectors/shared-domain-flags.golden.json"),
+    });
+    const run_domain_flags = b.addRunArtifact(domain_flags_test);
+    b.step("test-domain-flags", "check fleet-zig's shared domain flags match semantos-core").dependOn(&run_domain_flags.step);
+
     // Conformance against the SDK's pinned golden vector. The vector is
     // embedded rather than read at runtime so the test cannot silently pass by
     // failing to find it.
@@ -142,6 +159,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "run cross-implementation conformance");
     test_step.dependOn(&run_conformance.step);
     test_step.dependOn(&run_bridge.step);
+    test_step.dependOn(&run_domain_flags.step);
 
     // M5: drive real boards from this plane.
     const hw = b.addExecutable(.{
@@ -159,6 +177,25 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(hw);
     const run_hw = b.addRunArtifact(hw);
     b.step("hw", "run the hardware proof against two C6 boards").dependOn(&run_hw.step);
+
+    // The fleet operator's half of the live fleet↔wallet bridge — signs the
+    // shared digest over a nonce the wallet operator supplies, prints the fleet
+    // half as JSON for helm `bindFleet`. `zig build bridge-sign -- <args>`.
+    const bridge_sign = b.addExecutable(.{
+        .name = "fleet-bridge-sign",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bridge_sign.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    bridge_sign.root_module.addImport("derive", derive_mod);
+    bridge_sign.root_module.addImport("identity", identity_mod);
+    bridge_sign.root_module.addImport("bridge", bridge_mod);
+    b.installArtifact(bridge_sign);
+    const run_bridge_sign = b.addRunArtifact(bridge_sign);
+    if (b.args) |args| run_bridge_sign.addArgs(args);
+    b.step("bridge-sign", "produce the fleet half of a fleet↔wallet bridge (JSON)").dependOn(&run_bridge_sign.step);
 
     const exporter = b.addExecutable(.{
         .name = "export-recipe",

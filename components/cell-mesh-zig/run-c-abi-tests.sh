@@ -29,3 +29,4 @@ run_test test_cell_frame
 run_test test_cell_capability
 run_test test_cell_rules
 run_test test_mnca_incentive
+run_test test_cell_templog

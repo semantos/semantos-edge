@@ -1,0 +1,3 @@
+# Gateway role: build with
+#   idf.py -B build-gateway -D SDKCONFIG=build-gateway/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.gateway" build
+CONFIG_TL_ROLE_GATEWAY=y
