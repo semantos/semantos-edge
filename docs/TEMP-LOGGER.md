@@ -83,9 +83,9 @@ Sample flags:
 | Bit | Name | Meaning |
 |---:|---|---|
 | 0 | `POLICY_REJECT` | outside the safe band, or the engine could not say |
-| 1 | `VM_ERROR` | the engine failed to evaluate (always with `POLICY_REJECT`) |
+| 1 | `VM_ERROR` | the engine failed to evaluate, or disagreed with the node's native check of the same band (always with `POLICY_REJECT`) |
 | 2 | `SENSOR_ERROR` | no valid reading; `centi_c` is −32768 |
-| 3 | `POR_SUSPECT` | the probe returned its 85.00 °C power-on value twice; recorded as no reading, with `SENSOR_ERROR` |
+| 3 | `POR_SUSPECT` | the probe returned its 85.00 °C power-on value on every retry; recorded as no reading, with `SENSOR_ERROR` |
 | 4 | `RECORD_LOST` | the flash record for this seq was unreadable |
 
 ### Placing samples in time
@@ -162,6 +162,13 @@ failure — flags the sample `POLICY_REJECT`, and the board's LED shows it.
 The band is the policy's parameters, not the product's opinion: the default is
 −2.00 to 28.00 °C, set in `menuconfig`.
 
+The node also compares the reading with the band natively. If the engine and
+the native check disagree, the sample is flagged `VM_ERROR` as well as
+`POLICY_REJECT`. `tools/templog-policy/engine.test.ts` runs these exact script
+bytes through the same `cell-engine-embedded.wasm` on the host, across both
+edges of the band and negative temperatures, so a disagreement on a board
+points at the board.
+
 ## Serial lines (gateway)
 
 Gateway to host, one per received batch:
@@ -177,6 +184,11 @@ AK <mac aabbccddeeff> <acked_through decimal> <host_unix_s decimal>
 ```
 
 Other lines are ESP-IDF logs, and the bridge ignores them.
+
+## Running it
+
+Build, flash and wiring are in `examples/temp_logger/README.md`. The bridge is
+`tools/templog-bridge`.
 
 ## Honest caveats
 
