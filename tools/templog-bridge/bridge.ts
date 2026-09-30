@@ -2,9 +2,9 @@
 /**
  * bridge.ts — the temperature logger's host bridge (docs/TEMP-LOGGER.md).
  *
- *   bun tools/templog-bridge/bridge.ts --port /dev/cu.usbmodemXXXX [--out templog-readings.jsonl] [--post http://…]
- *   bun tools/templog-bridge/bridge.ts --sim [--out file.jsonl] [--post http://…]
- *   bun tools/templog-bridge/bridge.ts --replay --out templog-readings.jsonl --post http://…
+ *   bun tools/templog-bridge/bridge.ts --port /dev/cu.usbmodemXXXX [--out templog-readings.jsonl] [--post http://… [--token-file f]]
+ *   bun tools/templog-bridge/bridge.ts --sim [--out file.jsonl] [--post http://… [--token-file f]]
+ *   bun tools/templog-bridge/bridge.ts --replay --out templog-readings.jsonl --post http://… [--token-file f]
  *
  * The gateway prints one TL line per batch a node sends. For each, the bridge
  * checks the line's CRC and the cell, stores the new samples (store.ts:
@@ -20,9 +20,14 @@
  * --replay sends what the JSONL already holds to the server again (replay.ts):
  * the way back after the server was down, since a failed POST never held up
  * the ack and the node has since let those readings go.
+ *
+ * --token-file names a file holding the server's operator token, sent with
+ * each POST as `Authorization: Bearer <token>`. It is read from a file, never
+ * taken on the command line, where any process on the machine could read it;
+ * and it goes only over https, or plain http to this machine.
  */
 
-import { closeSync, existsSync, mkdtempSync, openSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -64,16 +69,44 @@ export interface PostBody {
 export type Poster = (body: PostBody) => Promise<void>;
 
 /** POST JSON to `url`; a network error or a non-2xx answer rejects. */
-export function httpPoster(url: string, timeoutMs = 10_000): Poster {
+export interface PosterOptions {
+  /** Sent as `Authorization: Bearer <token>`: the server's operator token. */
+  token?: string;
+  timeoutMs?: number;
+}
+
+/** POST JSON to `url`; a network error or a non-2xx answer rejects. */
+export function httpPoster(url: string, { token, timeoutMs = 10_000 }: PosterOptions = {}): Poster {
   return async (body) => {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (token !== undefined) headers.authorization = `Bearer ${token}`;
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
+    if (res.status === 401) {
+      throw new Error(token === undefined
+        ? 'HTTP 401: the server wants its operator token; pass --token-file'
+        : 'HTTP 401: the server refused the token from --token-file');
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`.trim());
   };
+}
+
+/** A bearer token crosses a network only inside TLS: plain http is for this machine. */
+export function tokenMayGoTo(url: URL): boolean {
+  if (url.protocol === 'https:') return true;
+  return url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+}
+
+/** The one word a token file holds, or why it is not a token. */
+function readTokenFile(path: string): string {
+  const token = readFileSync(path, 'utf8').trim();
+  if (token === '') throw new Error(`${path} is empty`);
+  if (/\s/.test(token)) throw new Error(`${path} holds more than one word`);
+  return token;
 }
 
 function postBody(batch: DecodedBatch, r: IngestResult): PostBody {
@@ -320,9 +353,9 @@ async function runSim(outPath: string | undefined, post: Poster | undefined): Pr
 }
 
 const USAGE = `usage:
-  bun tools/templog-bridge/bridge.ts --port /dev/cu.usbmodemXXXX [--out templog-readings.jsonl] [--post http://…]
-  bun tools/templog-bridge/bridge.ts --sim [--out file.jsonl] [--post http://…]
-  bun tools/templog-bridge/bridge.ts --replay --out templog-readings.jsonl --post http://…`;
+  bun tools/templog-bridge/bridge.ts --port /dev/cu.usbmodemXXXX [--out templog-readings.jsonl] [--post http://… [--token-file f]]
+  bun tools/templog-bridge/bridge.ts --sim [--out file.jsonl] [--post http://… [--token-file f]]
+  bun tools/templog-bridge/bridge.ts --replay --out templog-readings.jsonl --post http://… [--token-file f]`;
 
 async function runReplay(path: string, post: Poster, postUrl: string): Promise<number> {
   const log = (m: string) => console.log(`[templog] ${m}`);
@@ -337,7 +370,7 @@ async function runReplay(path: string, post: Poster, postUrl: string): Promise<n
 }
 
 export async function main(argv: string[]): Promise<number> {
-  let values: { port?: string; out?: string; post?: string; sim?: boolean; replay?: boolean; help?: boolean };
+  let values: { port?: string; out?: string; post?: string; 'token-file'?: string; sim?: boolean; replay?: boolean; help?: boolean };
   try {
     ({ values } = parseArgs({
       args: argv,
@@ -345,6 +378,7 @@ export async function main(argv: string[]): Promise<number> {
         port: { type: 'string' },
         out: { type: 'string' },
         post: { type: 'string' },
+        'token-file': { type: 'string' },
         sim: { type: 'boolean' },
         replay: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
@@ -372,6 +406,10 @@ export async function main(argv: string[]): Promise<number> {
     console.error(`--port is required (or --sim to run without hardware)\n${USAGE}`);
     return 2;
   }
+  if (values['token-file'] !== undefined && values.post === undefined) {
+    console.error(`--token-file goes with --post: it is the token the server there wants\n${USAGE}`);
+    return 2;
+  }
   let post: Poster | undefined;
   let postUrl: string | undefined;
   if (values.post !== undefined) {
@@ -386,7 +424,20 @@ export async function main(argv: string[]): Promise<number> {
       return 2;
     }
     postUrl = url.href;
-    post = httpPoster(postUrl);
+    let token: string | undefined;
+    if (values['token-file'] !== undefined) {
+      if (!tokenMayGoTo(url)) {
+        console.error(`--token-file: a token goes over https, or plain http to this machine; not to ${url.host} in the clear`);
+        return 2;
+      }
+      try {
+        token = readTokenFile(values['token-file']);
+      } catch (e) {
+        console.error(`--token-file: ${errText(e)}`);
+        return 2;
+      }
+    }
+    post = httpPoster(postUrl, { token });
   }
   if (values.replay) return runReplay(values.out!, post!, postUrl!);
   if (values.sim) return runSim(values.out, post);
