@@ -5,6 +5,23 @@ pays 100 sats. Each payment then lights the board once, one person at a time.
 The page tells each phone its place in the queue, then shows `LIT ✓` or the
 error text.
 
+## At the venue: one command
+
+```sh
+./start-light.sh
+```
+
+It runs Option 2 below and starts `cloudflared`. It then publishes the
+tunnel URL to rbs, so `https://todriguez.com/cfb/light` redirects to it.
+**Approve the Metanet Desktop dialog when the script says so.** Ctrl-C stops
+the bridge and the tunnel and unpublishes the URL.
+
+Pro-rata (metered) light is not possible on this bench. On 2026-10-01 board
+A was given metered-rental's `channel_open` and a `channel_commitment` worth
+12 sats. It printed only `CELL INJECTED` and `CELL BROADCAST` for each:
+an injector never runs its own cells, so metering needs a second mesh_demo
+board.
+
 ## The bench, as found on 2026-10-01
 
 | port | MAC | firmware |
