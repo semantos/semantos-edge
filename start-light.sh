@@ -162,7 +162,9 @@ printf '%s\n' "$URL" | ssh rbs "umask 077; cat > $CLAIM_DIR/light-url.tmp && cho
   || die "publishing the URL to rbs failed"
 PUBLISHED=1
 # Read the redirect only — never follow it to the fresh tunnel name.
-LOCATION="$(curl -sI --max-time 10 https://todriguez.com/cfb/light | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')"
+# A GET that does not follow: the claim service routes GET /light only, so a HEAD
+# (curl -I) gets no Location and the check cried wolf on 2026-10-01.
+LOCATION="$(curl -s -o /dev/null --max-time 10 -w '%{redirect_url}' https://todriguez.com/cfb/light)"
 echo "todriguez.com/cfb/light → ${LOCATION:-<no Location header>}"
 case "$LOCATION" in
   "$URL"*) loud ">>> LIVE: phones open https://todriguez.com/cfb/light in BSV Browser <<<"
