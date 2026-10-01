@@ -4,6 +4,7 @@
  *
  *   bun server.ts [--port 4021]
  *                 [--inject-port /dev/cu.usbmodemXXX --ack-port /dev/cu.usbmodemYYY]
+ *                 [--ack-from-mac aa:bb:.. | --ack-match "<log substring>"]
  *
  * A Dolphin Milk-style agent pays this endpoint over BSV-native x402; the
  * bridge actuates a rentable cell-mesh device. See README.md.
@@ -27,6 +28,7 @@ import { X402CellBridge, type MeshPort, type BridgeConfig } from './bridge.js';
 import { SerialMeshPort } from './serial-mesh.js';
 import { getPublicKey, p2pkhScriptHexFromPubkey, METANET_BASE, DEFAULT_ORIGIN } from './metanet.js';
 import { Brc29OnchainVerifier } from './onchain-payment.js';
+import { makeLightHandler, buildLightClient } from './light.js';
 
 // ── Provisioned offer (matches sign-cell-deck.ts RENTABLE_* constants) ──
 // Cell authority. The device verifies every signed cell against the trust
@@ -84,14 +86,25 @@ const ackPort = flag('--ack-port');
 // can't false-match the deck's own (device-A) activations on the mesh.
 const ackFromMac = flag('--ack-from-mac');
 
+// Optional: override the ack line outright. With only ONE mesh_demo board on
+// the bench there is no second board to actuate; `--ack-port <same as inject>
+// --ack-match "CELL INJECTED"` acks on the injector's own ack-blink instead.
+const ackMatchFlag = flag('--ack-match');
+
 let mesh: MeshPort = dryRunMesh;
 let meshLabel = 'dry-run (auto-ACK)';
+let serialMesh: SerialMeshPort | undefined;
 if (injectPort && ackPort) {
-  const ackMatch = ackFromMac
-    ? `*** ACTUATOR ACTIVATED *** from=[${ackFromMac}]`
-    : undefined;
-  mesh = new SerialMeshPort({ injectPort, ackPort, ackMatch });
-  meshLabel = `serial — inject ${injectPort}, ack ${ackPort}${ackFromMac ? ` (from=${ackFromMac})` : ''}`;
+  const ackMatch = ackMatchFlag
+    ?? (ackFromMac ? `*** ACTUATOR ACTIVATED *** from=[${ackFromMac}]` : undefined);
+  serialMesh = new SerialMeshPort({ injectPort, ackPort, ackMatch });
+  mesh = serialMesh;
+  meshLabel = `serial — inject ${injectPort}, ack ${ackPort} on "${ackMatch ?? '*** ACTUATOR ACTIVATED ***'}"`;
+}
+// Release the serial port on exit: the ack reader is a `cat` child that
+// would otherwise outlive the server and hold the tty.
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => { serialMesh?.dispose(); process.exit(0); });
 }
 
 // ── Real-payment mode (MAINNET) ───────────────────────────────────────
@@ -128,29 +141,27 @@ if (realPayment) {
 
 const bridge = new X402CellBridge(bridgeCfg);
 
-function send(r: { status: number; headers: Record<string, string>; body: unknown }): Response {
-  return new Response(JSON.stringify(r.body), { status: r.status, headers: r.headers });
+// Bundle the phone page's client now, so a build failure shows at start
+// rather than on the first phone.
+try {
+  const js = await buildLightClient();
+  console.log(`[light] phone client bundled (${Math.round(js.length / 1024)} KB)`);
+} catch (e) {
+  console.error(`[light] phone client build FAILED: ${(e as Error).message}`);
 }
 
 const server = Bun.serve({
   port,
-  // activate() may broadcast (with best-effort retries) + wait for the
-  // device ack — longer than Bun's 10s default request timeout.
-  idleTimeout: 30,
-  async fetch(req) {
-    const url = new URL(req.url);
-    if (req.method === 'GET' && url.pathname === '/.well-known/x402-info') {
-      return send(bridge.discover());
-    }
-    if (req.method === 'POST' && url.pathname === '/actuator/activate') {
-      return send(await bridge.activate(req.headers.get('x-bsv-payment')));
-    }
-    return new Response(JSON.stringify({ error: 'not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
-  },
+  // A blocking (non-async) activate waits its turn in the queue + the device
+  // ack. The phone page uses ?async=1 and polls, so this only matters to agents.
+  idleTimeout: 255,
+  fetch: makeLightHandler(bridge),
 });
 
 console.log(`x402↔cell bridge listening on http://localhost:${server.port}`);
 console.log(`  GET  /.well-known/x402-info     — free discovery (price=${OFFER.costSats} sats)`);
-console.log(`  POST /actuator/activate          — 402 challenge → pay via x-bsv-payment → actuate`);
+console.log(`  POST /actuator/activate          — 402 challenge → pay via x-bsv-payment → queued actuation`);
+console.log(`  GET  /  (/light)                 — phone page: "turn the light on"`);
+console.log(`  GET  /queue?ticket=<txid>        — place in the queue / lit / failed`);
 console.log(`  mesh:    ${meshLabel}`);
 console.log(`  payment: ${payLabel}`);
