@@ -15,7 +15,10 @@ type Wallet = {
 };
 
 const $ = (id: string) => document.getElementById(id)!;
-const btn = $('go') as HTMLButtonElement;
+// Blink mode has one #go button; metered mode has one .amt button per amount.
+const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('#go, button.amt'));
+const btn = buttons[0];
+const setBusy = (busy: boolean) => { for (const b of buttons) b.disabled = busy; };
 const statusEl = $('status');
 const detailEl = $('detail');
 const STORE = 'light.ticket';
@@ -69,7 +72,7 @@ function txHex(tx: number[] | Uint8Array): string {
 
 async function poll(ticket: string): Promise<void> {
   for (;;) {
-    let q: { state: string; ahead: number; litAt?: string; error?: string };
+    let q: { state: string; ahead: number; litAt?: string; error?: string; message?: string };
     try {
       const r = await fetch(`/queue?ticket=${encodeURIComponent(ticket)}`, { cache: 'no-store' });
       q = await r.json();
@@ -82,20 +85,21 @@ async function poll(ticket: string): Promise<void> {
       const at = q.litAt ? new Date(q.litAt).toLocaleTimeString() : '';
       say('LIT ✓', 'ok', `Your payment turned the light on${at ? ` at ${at}` : ''}. txid ${ticket.slice(0, 16)}…`);
       remember(null);
-      btn.disabled = false;
-      btn.textContent = `Again — ${btn.dataset.sats ?? ''} sats`;
+      setBusy(false);
+      if (btn.id === 'go') btn.textContent = `Again — ${btn.dataset.sats ?? ''} sats`;
+      if (q.message) say('LIT \u2713', 'ok', `${q.message}. txid ${ticket.slice(0, 16)}…`);
       return;
     }
     if (q.state === 'failed') {
       say('The board did not light', 'err', q.error ?? 'unknown error');
       remember(null);
-      btn.disabled = false;
+      setBusy(false);
       return;
     }
     if (q.state === 'unknown') {
       say('The bridge has forgotten this payment', 'err', 'It may have restarted. Tell the speaker.');
       remember(null);
-      btn.disabled = false;
+      setBusy(false);
       return;
     }
     if (q.state === 'lighting') say('Lighting now — look at the board!');
@@ -104,19 +108,20 @@ async function poll(ticket: string): Promise<void> {
   }
 }
 
-async function go(): Promise<void> {
-  btn.disabled = true;
+async function go(chosen?: number): Promise<void> {
+  setBusy(true);
   try {
     say('Reading the price…');
     const info = await (await fetch('/.well-known/x402-info', { cache: 'no-store' })).json();
     const payTo = info.payTo as { scriptHex: string; satoshis: number } | undefined;
     if (!payTo) throw new Error('the bridge is not taking real payments (no payTo) — it is in dry-run');
+    const sats = chosen ?? payTo.satoshis;
 
-    say('Approve the payment in your wallet…', 'info', `${payTo.satoshis} sats`);
+    say('Approve the payment in your wallet…', 'info', `${sats} sats`);
     const res = await withTimeout(
       wallet().createAction({
         description: 'turn the light on',
-        outputs: [{ lockingScript: payTo.scriptHex, satoshis: payTo.satoshis, outputDescription: 'light the C6 board' }],
+        outputs: [{ lockingScript: payTo.scriptHex, satoshis: sats, outputDescription: 'light the C6 board' }],
       }),
       90_000,
       'the wallet',
@@ -130,7 +135,7 @@ async function go(): Promise<void> {
     const init: RequestInit = payment.length <= 6000
       ? { method: 'POST', headers: { 'x-bsv-payment': payment } }
       : { method: 'POST', headers: { 'content-type': 'application/json' }, body: payment };
-    const r = await fetch('/actuator/activate?async=1', init);
+    const r = await fetch(`/actuator/activate?async=1${chosen ? `&sats=${chosen}` : ''}`, init);
     const body = await r.json().catch(() => ({}));
     if (r.status !== 202 && r.status !== 200) {
       throw new Error(`${r.status}: ${body.error ?? r.statusText}`);
@@ -142,17 +147,36 @@ async function go(): Promise<void> {
   } catch (e) {
     const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : JSON.stringify(e);
     say('Something went wrong', 'err', msg);
-    btn.disabled = false;
+    setBusy(false);
   }
 }
 
-btn.addEventListener('click', () => { void go(); });
+for (const b of buttons) {
+  b.addEventListener('click', () => { void go(b.classList.contains('amt') ? Number(b.dataset.sats) : undefined); });
+}
+
+// Metered: everyone sees the seconds the room has bought, from the bridge's tally.
+const meterEl = document.getElementById('meter');
+if (meterEl) {
+  const tick = async () => {
+    try {
+      const m = await (await fetch('/meter', { cache: 'no-store' })).json();
+      if (m.metered) {
+        const left = Math.floor(m.secondsLeft);
+        meterEl.textContent = left > 0 ? `Light: ON — ${left} s left` : 'Light: off — pay to turn it on';
+        meterEl.className = left > 0 ? 'on' : '';
+      }
+    } catch { /* blip */ }
+  };
+  void tick();
+  setInterval(() => { void tick(); }, 1000);
+}
 
 // Came back to the page mid-queue? Pick the ticket up again.
 let saved: string | null = null;
 try { saved = localStorage.getItem(STORE); } catch { /* ignore */ }
 if (saved) {
-  btn.disabled = true;
+  setBusy(true);
   say('Checking on your earlier payment…');
   void poll(saved);
 }

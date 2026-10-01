@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # start-light.sh — one command at the venue: bridge + tunnel + publish the URL.
 #
-#   ./start-light.sh            start everything; Ctrl-C stops it and unpublishes
+#   ./start-light.sh            METERED (default): sats buy seconds of light
+#   ./start-light.sh --blink    fallback: one 3-pulse blink on board A per payment
+#
+# Plug ONLY board A (the injector) into the Mac; B and C run on power packs.
 #
 # 1. Starts the x402 light bridge on :4021 against board A (/dev/cu.usbmodem11201),
 #    taking REAL payments (cap 500 sats). The phone's wallet broadcasts its own tx.
@@ -12,10 +15,11 @@
 # Ctrl-C kills both children and removes the published URL, so /cfb/light goes
 # back to "not on yet".
 #
-# Mode: BLINK. Board A is the only mesh_demo board on the bench; it acks each
-# injected cell with a 3-pulse blink. It cannot meter a payment channel on its
-# own (a second mesh_demo board would have to run the cells). B (11301) and
-# C (11401) are the cold-chain temp_logger boards: this script never touches them.
+# METERED: A broadcasts a payment channel; B and C (mesh_demo, on power packs)
+# each meter it themselves at ~1.2 sats/s and switch their LEDs off when the
+# paid sats run out. Everyone's payments add up. The channel id lives in
+# ~/.semantos-light-channel.json so a restart can close it cleanly.
+# BLINK: A acks each injected cell with a 3-pulse blink; no other board needed.
 
 set -u
 
@@ -38,6 +42,13 @@ if [ "${1:-}" = "--parse-url-from" ]; then
   parse_url "$2"
   exit 0
 fi
+
+MODE=metered
+case "${1:-}" in
+  --blink) MODE=blink ;;
+  "") ;;
+  *) echo "usage: $0 [--blink]" >&2; exit 2 ;;
+esac
 
 loud() { printf '\n\033[1;33m%s\033[0m\n\n' "$*"; }
 die() { printf '\033[1;31m%s\033[0m\n' "$*" >&2; exit 1; }
@@ -83,10 +94,18 @@ mkdir -p "$LOGDIR"
 
 # ── 1. the bridge ────────────────────────────────────────────────────
 cd "$HERE" || die "cannot cd to $HERE"
-bun tools/x402-bridge/server.ts --port "$PORT" \
-  --real-payment --max-sats 500 --no-bridge-broadcast \
-  --inject-port "$BOARD" --ack-port "$BOARD" --ack-match "CELL INJECTED" \
-  >"$BRIDGE_LOG" 2>&1 &
+echo "mode: $MODE"
+if [ "$MODE" = metered ]; then
+  bun tools/x402-bridge/server.ts --port "$PORT" \
+    --real-payment --max-sats 500 --no-bridge-broadcast \
+    --metered --inject-port "$BOARD" \
+    >"$BRIDGE_LOG" 2>&1 &
+else
+  bun tools/x402-bridge/server.ts --port "$PORT" \
+    --real-payment --max-sats 500 --no-bridge-broadcast \
+    --inject-port "$BOARD" --ack-port "$BOARD" --ack-match "CELL INJECTED" \
+    >"$BRIDGE_LOG" 2>&1 &
+fi
 BRIDGE_PID=$!
 loud ">>> APPROVE THE METANET DESKTOP DIALOG NOW (the bridge needs its receive key) <<<"
 
@@ -100,6 +119,9 @@ until grep -q "listening on" "$BRIDGE_LOG" 2>/dev/null; do
 done
 cat "$BRIDGE_LOG"
 grep -q "payment: MAINNET" "$BRIDGE_LOG" || die "bridge is not in real-payment mode — refusing to publish"
+if [ "$MODE" = metered ] && grep -q "WARNING: the injector did not broadcast" "$BRIDGE_LOG"; then
+  die "board A did not broadcast the channel_open — replug A and retry (or ./start-light.sh --blink)"
+fi
 
 # ── 2. the tunnel ────────────────────────────────────────────────────
 cloudflared tunnel --url "http://localhost:$PORT" >"$TUNNEL_LOG" 2>&1 &

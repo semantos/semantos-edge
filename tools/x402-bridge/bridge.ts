@@ -38,6 +38,7 @@ import {
 } from './x402.js';
 import { broadcastTxHex, type ArcOptions } from './arc.js';
 import { parseTx } from './onchain-payment.js';
+import type { ChannelMeter, MeterStatus } from './meter.js';
 import { createHash } from 'node:crypto';
 
 /** A transport to the cell mesh — broadcast a signed cell, await device ACK. */
@@ -89,6 +90,16 @@ export interface BridgeConfig {
    * gets a 504 rather than wedging the queue. Default: activationTimeoutMs + 10 s.
    */
   queueTimeoutMs?: number;
+  /**
+   * METERED mode: a payment buys seconds. The price is the amount the payer
+   * chose; a verified payment becomes one channel commitment and the boards
+   * meter it themselves. Without a meter, a payment is one 5 s activation.
+   */
+  meter?: ChannelMeter;
+  /** The amounts the phone page offers (sats). Default [12, 36, 72]. */
+  meterOptions?: number[];
+  /** Largest amount one payment may choose. Default: the largest option. */
+  maxSats?: number;
 }
 
 /** Where one paid activation is: waiting, being lit, done, or failed. */
@@ -102,11 +113,15 @@ export interface TicketStatus {
   length: number;
   litAt?: string;
   error?: string;
+  secondsAdded?: number;
+  message?: string;
 }
 interface Ticket {
   state: TicketState;
   litAt?: string;
   error?: string;
+  secondsAdded?: number;
+  message?: string;
 }
 
 export interface BridgeResponse {
@@ -138,6 +153,9 @@ export class X402CellBridge {
   private readonly tickets = new Map<string, Ticket>();
   /** Payments already spent on an activation — a replay never re-lights. */
   private readonly used = new Set<string>();
+  private readonly meter?: ChannelMeter;
+  readonly meterOptions: number[];
+  private readonly maxSats: number;
 
   constructor(cfg: BridgeConfig) {
     this.offer = cfg.offer;
@@ -149,7 +167,11 @@ export class X402CellBridge {
     this.receiveScriptHex = cfg.receiveScriptHex;
     this.broadcastOnVerify = cfg.broadcastOnVerify ?? false;
     this.arc = cfg.arc;
-    this.holdMs = cfg.holdMs ?? this.offer.durationMs + 500;
+    this.meter = cfg.meter;
+    this.meterOptions = cfg.meterOptions ?? [12, 36, 72];
+    this.maxSats = cfg.maxSats ?? Math.max(...this.meterOptions);
+    // Metered payments add up on the chip; there is nothing to wait out.
+    this.holdMs = cfg.holdMs ?? (this.meter ? 0 : this.offer.durationMs + 500);
     this.queueTimeoutMs = cfg.queueTimeoutMs ?? this.timeoutMs + 10_000;
     // owner_id tag = first 16 bytes of the compressed wallet pubkey.
     this.ownerId = new Uint8Array(Buffer.from(this.walletKey.toPublicKey().toString(), 'hex')).subarray(0, 16);
@@ -180,10 +202,18 @@ export class X402CellBridge {
           lockScriptHex: toHex(this.offer.lockScript),
         },
         ...(this.receiveScriptHex
-          ? { payTo: { scriptHex: this.receiveScriptHex, satoshis: this.offer.costSats, network: 'mainnet' } }
+          ? { payTo: { scriptHex: this.receiveScriptHex, satoshis: this.meter ? this.meterOptions[0] : this.offer.costSats, network: 'mainnet' } }
+          : {}),
+        ...(this.meter
+          ? { meter: { satsPerSecond: this.meter.status().satsPerSecond, options: this.meterOptions, minSats: Math.min(...this.meterOptions), maxSats: this.maxSats } }
           : {}),
       },
     };
+  }
+
+  /** GET /meter — seconds of light left, from the bridge's own tally. */
+  meterStatus(): MeterStatus | { metered: false } {
+    return this.meter ? this.meter.status() : { metered: false };
   }
 
   /**
@@ -196,19 +226,29 @@ export class X402CellBridge {
    */
   async activate(
     paymentHeader: string | null | undefined,
-    opts: { async?: boolean } = {},
+    opts: { async?: boolean; sats?: number } = {},
   ): Promise<BridgeResponse> {
+    // Metered: the price is what the payer chose, within bounds.
+    let price = this.offer.costSats;
+    if (this.meter) {
+      const min = Math.min(...this.meterOptions);
+      const chosen = opts.sats ?? this.meterOptions[0];
+      if (!Number.isInteger(chosen) || chosen < min || chosen > this.maxSats) {
+        return this.error(400, `choose between ${min} and ${this.maxSats} sats`);
+      }
+      price = chosen;
+    }
     if (!paymentHeader) {
       const derivationPrefix = randomBytes(16).toString('base64');
       return {
         status: 402,
         headers: {
-          ...buildChallengeHeaders(this.offer.costSats, derivationPrefix),
+          ...buildChallengeHeaders(price, derivationPrefix),
           'content-type': 'application/json',
         },
         body: {
           error: 'payment required',
-          satoshisRequired: this.offer.costSats,
+          satoshisRequired: price,
           offerId: toHex(this.offer.offerId),
           ...(this.receiveScriptHex ? { payToScriptHex: this.receiveScriptHex } : {}),
         },
@@ -222,7 +262,7 @@ export class X402CellBridge {
     } catch (e) {
       return this.error(400, `malformed x-bsv-payment: ${(e as Error).message}`);
     }
-    const v = this.verifier.verify(payment, this.offer.costSats);
+    const v = this.verifier.verify(payment, price);
     if (!v.ok) return this.error(402, `payment rejected: ${v.reason}`);
 
     // One payment, one light. Claim the txid before anything awaits, so two
@@ -241,7 +281,7 @@ export class X402CellBridge {
     // pre-broadcasts) do we fall back to the payer/verifier txid.
     let txid: string | undefined;
     if (this.broadcastOnVerify && typeof payment.transaction === 'string') {
-      console.log(`[bridge] broadcasting payment to ARC (${this.offer.costSats} sats)…`);
+      console.log(`[bridge] broadcasting payment to ARC (${price} sats)…`);
       const b = await broadcastTxHex(payment.transaction, this.arc);
       if (!b.ok) {
         console.error(`[bridge] payment broadcast FAILED: ${b.reason}`);
@@ -266,6 +306,46 @@ export class X402CellBridge {
     return result;
   }
 
+  /** Metered: one commitment adding the paid sats; the boards meter it. */
+  private async actuateMetered(t: Ticket, satoshisPaid: number, txid: string | undefined): Promise<BridgeResponse> {
+    const meter = this.meter!;
+    let r: Awaited<ReturnType<ChannelMeter['addSats']>> | 'timeout';
+    try {
+      r = await withTimeout(meter.addSats(satoshisPaid), this.queueTimeoutMs * 3);
+    } catch (e) {
+      t.state = 'failed';
+      t.error = `mesh error: ${(e as Error).message}`;
+      return this.error(502, t.error);
+    }
+    if (r === 'timeout' || !r.ok) {
+      t.state = 'failed';
+      t.error = r === 'timeout' ? 'the injector board did not answer before timeout' : (r.error ?? 'commitment failed');
+      return this.error(504, t.error);
+    }
+    t.state = 'lit';
+    t.litAt = new Date().toISOString();
+    t.secondsAdded = r.secondsAdded;
+    t.message = `≈${Math.round(r.secondsAdded)} s of light added`;
+    return {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'x-bsv-payment-satoshis-paid': String(satoshisPaid),
+        ...(txid ? { 'x-bsv-payment-txid': txid } : {}),
+      },
+      body: {
+        activated: true,
+        metered: true,
+        satoshisPaid,
+        secondsAdded: r.secondsAdded,
+        secondsLeft: r.secondsLeft,
+        message: t.message,
+        ...(txid ? { txid } : {}),
+        activatedAt: t.litAt,
+      },
+    };
+  }
+
   /** GET /queue — where a ticket is, or the queue's length with no ticket. */
   queueStatus(ticket?: string | null): TicketStatus | { length: number; lighting: boolean } {
     if (!ticket) {
@@ -280,6 +360,8 @@ export class X402CellBridge {
       length: this.pending.length,
       ...(t?.litAt ? { litAt: t.litAt } : {}),
       ...(t?.error ? { error: t.error } : {}),
+      ...(t?.secondsAdded !== undefined ? { secondsAdded: t.secondsAdded } : {}),
+      ...(t?.message ? { message: t.message } : {}),
     };
   }
 
@@ -304,6 +386,7 @@ export class X402CellBridge {
 
   private async actuate(t: Ticket, satoshisPaid: number, txid: string | undefined): Promise<BridgeResponse> {
     t.state = 'lighting';
+    if (this.meter) return this.actuateMetered(t, satoshisPaid, txid);
     let activated: boolean | 'timeout';
     try {
       activated = await withTimeout(

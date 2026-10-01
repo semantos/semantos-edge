@@ -5,6 +5,7 @@
  *   bun server.ts [--port 4021]
  *                 [--inject-port /dev/cu.usbmodemXXX --ack-port /dev/cu.usbmodemYYY]
  *                 [--ack-from-mac aa:bb:.. | --ack-match "<log substring>"]
+ *                 [--metered [--meter-options 12,36,72] [--meter-state <file>]]
  *
  * A Dolphin Milk-style agent pays this endpoint over BSV-native x402; the
  * bridge actuates a rentable cell-mesh device. See README.md.
@@ -29,6 +30,9 @@ import { SerialMeshPort } from './serial-mesh.js';
 import { getPublicKey, p2pkhScriptHexFromPubkey, METANET_BASE, DEFAULT_ORIGIN } from './metanet.js';
 import { Brc29OnchainVerifier } from './onchain-payment.js';
 import { makeLightHandler, buildLightClient } from './light.js';
+import { ChannelMeter } from './meter.js';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 // ── Provisioned offer (matches sign-cell-deck.ts RENTABLE_* constants) ──
 // Cell authority. The device verifies every signed cell against the trust
@@ -91,10 +95,21 @@ const ackFromMac = flag('--ack-from-mac');
 // --ack-match "CELL INJECTED"` acks on the injector's own ack-blink instead.
 const ackMatchFlag = flag('--ack-match');
 
+// --metered: sats buy seconds, metered by the boards themselves. Only the
+// injector (A) needs a cable; the actuators can run on power packs. The
+// bridge's ack is A's own "*** CELL BROADCAST ***" line (it put the cell on
+// the air) — nobody can read a board on a power pack.
+const metered = args.includes('--metered');
+
 let mesh: MeshPort = dryRunMesh;
 let meshLabel = 'dry-run (auto-ACK)';
 let serialMesh: SerialMeshPort | undefined;
-if (injectPort && ackPort) {
+if (metered && injectPort) {
+  const ackMatch = ackMatchFlag ?? '*** CELL BROADCAST ***';
+  serialMesh = new SerialMeshPort({ injectPort, ackPort: ackPort ?? injectPort, ackMatch });
+  mesh = serialMesh;
+  meshLabel = `serial — inject ${injectPort}, ack ${ackPort ?? injectPort} on "${ackMatch}"`;
+} else if (injectPort && ackPort) {
   const ackMatch = ackMatchFlag
     ?? (ackFromMac ? `*** ACTUATOR ACTIVATED *** from=[${ackFromMac}]` : undefined);
   serialMesh = new SerialMeshPort({ injectPort, ackPort, ackMatch });
@@ -119,7 +134,16 @@ const metanetOrigin = flag('--metanet-origin') ?? DEFAULT_ORIGIN;
 const maxSats = flag('--max-sats') ? Number(flag('--max-sats')) : 1000;
 let payLabel = 'simulated (no real tx)';
 
-const bridgeCfg: BridgeConfig = { offer: OFFER, walletKey: WALLET, mesh };
+const bridgeCfg: BridgeConfig = { offer: OFFER, walletKey: WALLET, mesh, maxSats };
+let meter: ChannelMeter | undefined;
+if (metered) {
+  const options = (flag('--meter-options') ?? '12,36,72').split(',').map(Number).filter((n) => n > 0 && n <= maxSats);
+  if (options.length === 0) throw new Error('--meter-options: no amount fits under --max-sats');
+  const statePath = flag('--meter-state') ?? join(homedir(), '.semantos-light-channel.json');
+  meter = new ChannelMeter({ mesh, key: WALLET, statePath });
+  bridgeCfg.meter = meter;
+  bridgeCfg.meterOptions = options;
+}
 if (realPayment) {
   const offerIdHex = Buffer.from(OFFER.offerId).toString('hex');
   const receivePk = await getPublicKey(
@@ -140,6 +164,14 @@ if (realPayment) {
 }
 
 const bridge = new X402CellBridge(bridgeCfg);
+
+if (meter) {
+  console.log(`[meter] announcing channel to the boards (state ${flag('--meter-state') ?? '~/.semantos-light-channel.json'})…`);
+  const ok = await meter.start();
+  console.log(ok
+    ? `[meter] channel ${meter.channelIdHex.slice(0, 12)}… on the air — boards light ~${meter.status().satsPerSecond} sats/s`
+    : '[meter] WARNING: the injector did not broadcast the channel_open — check board A');
+}
 
 // Bundle the phone page's client now, so a build failure shows at start
 // rather than on the first phone.
@@ -164,4 +196,5 @@ console.log(`  POST /actuator/activate          — 402 challenge → pay via x-
 console.log(`  GET  /  (/light)                 — phone page: "turn the light on"`);
 console.log(`  GET  /queue?ticket=<txid>        — place in the queue / lit / failed`);
 console.log(`  mesh:    ${meshLabel}`);
+console.log(`  mode:    ${metered ? `METERED — sats buy seconds (${bridgeCfg.meterOptions!.join('/')} sats), GET /meter` : 'blink — one activation per payment'}`);
 console.log(`  payment: ${payLabel}`);

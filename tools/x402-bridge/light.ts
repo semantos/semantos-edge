@@ -86,8 +86,13 @@ async function paymentFrom(req: Request): Promise<string | null> {
 
 export function makeLightHandler(bridge: X402CellBridge, opts: LightHandlerOptions = {}) {
   const clientJs = opts.clientJs ?? buildLightClient;
-  const price = (bridge.discover().body as { offer: { costSats: number; durationMs: number } }).offer;
-  const html = pageHtml(price.costSats, price.durationMs);
+  const info = bridge.discover().body as {
+    offer: { costSats: number; durationMs: number };
+    meter?: { satsPerSecond: number; options: number[] };
+  };
+  const html = info.meter
+    ? meteredPageHtml(info.meter.options, info.meter.satsPerSecond)
+    : pageHtml(info.offer.costSats, info.offer.durationMs);
   let gz: { src: string; bytes: Uint8Array } | undefined;
 
   return async function handle(req: Request): Promise<Response> {
@@ -116,12 +121,32 @@ export function makeLightHandler(bridge: X402CellBridge, opts: LightHandlerOptio
     }
     if (req.method === 'GET' && path === '/.well-known/x402-info') return send(bridge.discover());
     if (req.method === 'GET' && path === '/queue') return json(200, bridge.queueStatus(url.searchParams.get('ticket')));
+    if (req.method === 'GET' && path === '/meter') return json(200, bridge.meterStatus());
     if (req.method === 'POST' && path === '/actuator/activate') {
       const isAsync = ['1', 'true', 'yes'].includes(url.searchParams.get('async') ?? '');
-      return send(await bridge.activate(await paymentFrom(req), { async: isAsync }));
+      const satsQ = url.searchParams.get('sats');
+      const sats = satsQ === null ? undefined : Number(satsQ);
+      return send(await bridge.activate(await paymentFrom(req), { async: isAsync, sats }));
     }
     return json(404, { error: 'not found' });
   };
+}
+
+const secondsFor = (sats: number, rate: number) => Math.round(sats / rate);
+
+function meteredPageHtml(options: number[], rate: number): string {
+  const buttons = options
+    .map((s) => `<button class="amt" type="button" data-sats="${s}"><b>${s} sats</b><span>≈ ${secondsFor(s, rate)} s of light</span></button>`)
+    .join('\n  ');
+  return pageHtml(options[0], 0)
+    .replace(/<p class="lede">[\s\S]*?<\/p>\s*<button id="go"[^>]*>[^<]*<\/button>/, `<p class="lede">Your sats buy seconds: the board meters what it has been paid and switches itself off when it runs out. Everyone's payments add up — keep it on together.</p>
+  <p id="meter" aria-live="polite">Light: off</p>
+  ${buttons}`)
+    .replace('</style>', `  .amt { min-height:72px; display:flex; justify-content:space-between; align-items:center; font-size:22px; }
+  .amt span { font-weight:500; font-size:17px; }
+  #meter { font-size:28px; font-weight:700; margin:0; }
+  #meter.on { color:var(--accent); }
+</style>`);
 }
 
 function pageHtml(sats: number, durationMs: number): string {
