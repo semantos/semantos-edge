@@ -55,8 +55,19 @@ export interface ChannelMeterConfig {
   now?: () => number;
   /** The chip's rate. Firmware: CM_METER_RATE_MSAT_PER_SEC = 1200. */
   satsPerSecond?: number;
-  /** Re-send channel_open (same id) before a commitment if the last is older. */
+  /** Re-send channel_open (same id, once) before a commitment if the last is older. Default 10 s. */
   reopenEveryMs?: number;
+  /**
+   * ESP-NOW broadcast is unacked, so a board can miss a cell. OPEN and CLOSE
+   * go out this many times (default 2) — a missed CLOSE strands a board in
+   * the old channel, refusing the new OPEN. Duplicates are harmless on the
+   * device: a second open is refused from OPEN/ACTIVE (apply_open rc=-1), a
+   * second close from CLOSED, and a same-seq commitment as stale (rc=-3);
+   * device_share is absolute, so nothing double-counts.
+   */
+  repeat?: number;
+  /** Copies of each commitment (default 2). The payer is answered after the first. */
+  commitRepeat?: number;
   /** How long to wait for the injector's broadcast line. */
   ackTimeoutMs?: number;
   /** Time from deciding a commitment to the chip applying it (A's staging + air). */
@@ -96,8 +107,12 @@ export class ChannelMeter {
   private readonly ackTimeoutMs: number;
   private readonly inFlightMs: number;
   private readonly statePath?: string;
+  private readonly repeat: number;
+  private readonly commitRepeat: number;
   private state: MeterState;
   private lastOpenAt: number | null = null;
+  /** Background repeats of the last commitment; the next operation waits for them. */
+  private tail: Promise<void> = Promise.resolve();
 
   constructor(cfg: ChannelMeterConfig) {
     this.mesh = cfg.mesh;
@@ -106,7 +121,9 @@ export class ChannelMeter {
     this.owner = this.pub.subarray(0, 16);
     this.now = cfg.now ?? Date.now;
     this.rate = cfg.satsPerSecond ?? 1.2;
-    this.reopenEveryMs = cfg.reopenEveryMs ?? 30_000;
+    this.reopenEveryMs = cfg.reopenEveryMs ?? 10_000;
+    this.repeat = Math.max(1, cfg.repeat ?? 2);
+    this.commitRepeat = Math.max(1, cfg.commitRepeat ?? 2);
     this.ackTimeoutMs = cfg.ackTimeoutMs ?? 6_000;
     this.inFlightMs = cfg.inFlightMs ?? 2_600;
     this.statePath = cfg.statePath;
@@ -129,8 +146,14 @@ export class ChannelMeter {
    * close it first (boards still in it would refuse a new open).
    */
   async start(): Promise<boolean> {
+    await this.flush();
     if (this.state.seq > 0) return this.newSession();
-    return this.sendOpen();
+    return this.sendOpen(this.repeat);
+  }
+
+  /** Wait for any background repeats to finish (tests, shutdown). */
+  flush(): Promise<void> {
+    return this.tail;
   }
 
   /** Re-sync, close the current channel, open a fresh one. */
@@ -139,7 +162,7 @@ export class ChannelMeter {
     if (seq > 0) {
       // Best-effort: a board that rebooted is CLOSED and ignores both.
       await this.send(COMMITMENT_TYPE, this.encodeCommitment(seq, share));
-      await this.send(CLOSE_TYPE, this.encodeClose(seq, share));
+      await this.send(CLOSE_TYPE, this.encodeClose(seq, share), this.repeat);
     }
     this.state = {
       channelIdHex: randomBytes(16).toString('hex'),
@@ -149,7 +172,7 @@ export class ChannelMeter {
       meterStartAt: null,
     };
     this.save();
-    return this.sendOpen();
+    return this.sendOpen(this.repeat);
   }
 
   /** What the chip has consumed by time t (ms epoch), in sats. */
@@ -175,10 +198,11 @@ export class ChannelMeter {
   /** Commit `sats` more to the boards. One commitment; cumulative share. */
   async addSats(sats: number): Promise<{ ok: boolean; secondsAdded: number; secondsLeft: number; error?: string }> {
     const secondsAdded = Math.round((sats / this.rate) * 10) / 10;
+    await this.flush();
     if (this.state.seq > 0 && this.consumedAt(this.now()) >= this.state.share) {
       await this.newSession(); // dark: start a fresh, small channel
     } else if (this.lastOpenAt === null || this.now() - this.lastOpenAt > this.reopenEveryMs) {
-      await this.sendOpen(); // rejoin any board that rebooted; best-effort
+      await this.sendOpen(1); // rejoin any board that rebooted; best-effort
     }
     // Catch-up: if the chip has drained past what was committed (dark), the
     // new sats must start from what it will have consumed when this lands.
@@ -186,7 +210,8 @@ export class ChannelMeter {
     const base = Math.max(this.state.share, Math.ceil(landing));
     const share = base + sats;
     const seq = this.state.seq + 1;
-    const ok = await this.send(COMMITMENT_TYPE, this.encodeCommitment(seq, share));
+    const commitment = this.seal(COMMITMENT_TYPE, this.encodeCommitment(seq, share));
+    const ok = await this.broadcast(commitment);
     if (!ok) {
       return { ok: false, secondsAdded: 0, secondsLeft: this.status().secondsLeft, error: 'the injector board did not broadcast the commitment' };
     }
@@ -195,19 +220,37 @@ export class ChannelMeter {
     this.state.satsPaid += sats;
     if (this.state.meterStartAt === null) this.state.meterStartAt = this.now();
     this.save();
+    // The light is on; repeat the same cell in the background for any board
+    // that missed it. The next payment waits for these.
+    if (this.commitRepeat > 1) {
+      this.tail = (async () => {
+        for (let i = 1; i < this.commitRepeat; i++) await this.broadcast(commitment);
+      })().catch(() => undefined);
+    }
     return { ok: true, secondsAdded, secondsLeft: this.status().secondsLeft };
   }
 
-  private async sendOpen(): Promise<boolean> {
-    const ok = await this.send(OPEN_TYPE, this.encodeOpen());
+  private async sendOpen(times: number): Promise<boolean> {
+    const ok = await this.send(OPEN_TYPE, this.encodeOpen(), times);
     if (ok) this.lastOpenAt = this.now();
     return ok;
   }
 
-  private async send(type: Uint8Array, payload: Uint8Array): Promise<boolean> {
+  /** Mint + sign once, broadcast `times` copies of the identical cell. True if any went out. */
+  private async send(type: Uint8Array, payload: Uint8Array, times = 1): Promise<boolean> {
+    const sealed = this.seal(type, payload);
+    let any = false;
+    for (let i = 0; i < times; i++) any = (await this.broadcast(sealed)) || any;
+    return any;
+  }
+
+  private seal(type: Uint8Array, payload: Uint8Array): { cell: Uint8Array; sig: Uint8Array } {
     const cell = mintCell(type, payload, this.owner, BigInt(this.now()), domainForType(type));
-    const sig = signCell(cell, this.key);
-    await this.mesh.broadcast(cell, sig);
+    return { cell, sig: signCell(cell, this.key) };
+  }
+
+  private async broadcast(c: { cell: Uint8Array; sig: Uint8Array }): Promise<boolean> {
+    await this.mesh.broadcast(c.cell, c.sig);
     return this.mesh.awaitActivation(new Uint8Array(16), this.ackTimeoutMs);
   }
 

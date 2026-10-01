@@ -42,17 +42,29 @@ be read:
   `COMMIT seq=2 share=72 consumed=23` at t=647.9 s (the light extended),
   then `METER EXHAUSTED` at t=689.8 s. That is 61.4 s, against the
   bridge's estimate of 60.8 s.
+- **ESP-NOW broadcasts are unacked, so the bridge repeats cells.** OPEN and
+  CLOSE go out twice, and each commitment twice. The second copy is sent
+  in the background after the phone has had its answer. Duplicates are
+  harmless on the boards: a second open is refused (`rc=-1`), a same-seq
+  commitment is refused as stale (`rc=-3`), and a second close is refused
+  once the channel is closed. `device_share` is absolute, so nothing
+  counts twice.
 - **A board that reboots** (someone unplugs it) loses the channel. The
-  bridge re-sends `channel_open` with the same id before a payment if the
-  last open is more than 30 s old. Boards still in the channel answer
+  bridge re-sends `channel_open` with the same id, once, before a payment
+  if the last open is more than 10 s old. Boards still in the channel answer
   `apply_open rc=-1` and carry on; the rebooted board rejoins. **Caveat:**
   the rejoined board starts a fresh meter against the whole share of the
   current lit stretch, so it can stay on longer than the others until
   that stretch ends.
 - **When the light is out, the next payment starts a new channel:** the
-  bridge re-sends the last commitment, sends `channel_close`, then a new
-  `channel_open`. So the first payment after the light goes dark takes
-  about 10 s to light, and later ones about 3 s.
+  bridge re-sends the last commitment once, sends `channel_close` twice,
+  then a new `channel_open` twice. Each cell waits about 2.7 s for A's
+  broadcast. So the first payment after the light goes dark takes about
+  16 s to light, and later ones about 3–5.5 s. A payment arriving straight
+  after another waits up to 2.7 s more for the earlier repeat.
+- **DNS:** `start-light.sh` waits 15 s, then probes the fresh tunnel only
+  via `dig @1.1.1.1` and `curl --resolve`, so the venue router never
+  caches "no such host". Phones should still give it a minute.
 - **Restarting the bridge** closes the channel it remembers in
   `~/.semantos-light-channel.json` and opens a new one. If the boards are
   in a channel the bridge does not know about, they ignore it until they

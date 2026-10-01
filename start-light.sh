@@ -137,20 +137,36 @@ while [ -z "$URL" ]; do
 done
 echo "tunnel: $URL"
 
-# The tunnel takes a few seconds to route; wait until the page answers.
-for _ in $(seq 1 30); do
-  curl -fsS -o /dev/null --max-time 5 "$URL/" && break
-  sleep 2
+# Never resolve the fresh tunnel name through the local resolver. A venue
+# router that asks before cloudflare has published the name caches
+# NXDOMAIN, and every phone on that Wi-Fi then gets "no such host" for
+# minutes. So wait, then probe only via 1.1.1.1 with curl --resolve.
+HOST="${URL#https://}"
+DNS_WAIT="${LIGHT_DNS_WAIT:-15}"
+echo "waiting ${DNS_WAIT}s before probing $HOST (via 1.1.1.1 only)…"
+sleep "$DNS_WAIT"
+IP=""
+for _ in $(seq 1 20); do
+  IP="$(dig +short "$HOST" @1.1.1.1 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){3}$' | head -n 1)"
+  if [ -n "$IP" ] && curl -fsS -o /dev/null --max-time 5 --resolve "$HOST:443:$IP" "$URL/"; then
+    echo "tunnel answers at $IP (resolved via 1.1.1.1)"
+    break
+  fi
+  IP=""
+  sleep 3
 done
+[ -n "$IP" ] || loud ">>> WARNING: the tunnel did not answer via 1.1.1.1 yet — publishing anyway <<<"
 
 # ── 3. publish ───────────────────────────────────────────────────────
 printf '%s\n' "$URL" | ssh rbs "umask 077; cat > $CLAIM_DIR/light-url.tmp && chown semantos-meetup-claims: $CLAIM_DIR/light-url.tmp && mv $CLAIM_DIR/light-url.tmp $CLAIM_DIR/light-url" \
   || die "publishing the URL to rbs failed"
 PUBLISHED=1
-LOCATION="$(curl -sI https://todriguez.com/cfb/light | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')"
+# Read the redirect only — never follow it to the fresh tunnel name.
+LOCATION="$(curl -sI --max-time 10 https://todriguez.com/cfb/light | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')"
 echo "todriguez.com/cfb/light → ${LOCATION:-<no Location header>}"
 case "$LOCATION" in
-  "$URL"*) loud ">>> LIVE: phones open https://todriguez.com/cfb/light in BSV Browser <<<" ;;
+  "$URL"*) loud ">>> LIVE: phones open https://todriguez.com/cfb/light in BSV Browser <<<"
+          loud ">>> phones: give it a minute before the first scan <<<" ;;
   *) loud ">>> WARNING: /cfb/light does not point at $URL yet — phones can use $URL directly <<<" ;;
 esac
 echo "queue: curl localhost:$PORT/queue     stop: Ctrl-C"

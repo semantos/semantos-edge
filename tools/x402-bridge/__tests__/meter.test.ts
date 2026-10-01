@@ -35,6 +35,9 @@ function fakeMesh(ack = true) {
   return { mesh, sent };
 }
 
+/** Session-logic tests send each cell once; the repeat tests below cover radio redundancy. */
+const ONCE = { repeat: 1, commitRepeat: 1, reopenEveryMs: 30_000 };
+
 function clock(start = 1_000_000) {
   let t = start;
   return { now: () => t, advance: (ms: number) => { t += ms; } };
@@ -44,7 +47,7 @@ describe('ChannelMeter — the chip meters, the bridge keeps the books', () => {
   it('opens one channel and commits cumulative device_share while lit', async () => {
     const m = fakeMesh();
     const c = clock();
-    const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: c.now });
+    const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: c.now, ...ONCE });
     await meter.start();
     expect(m.sent).toEqual([{ kind: 'open', id: meter.channelIdHex }]);
 
@@ -67,7 +70,7 @@ describe('ChannelMeter — the chip meters, the bridge keeps the books', () => {
   it('after the light has gone dark, the next payment starts a fresh channel', async () => {
     const m = fakeMesh();
     const c = clock();
-    const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: c.now });
+    const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: c.now, ...ONCE });
     await meter.start();
     const first = meter.channelIdHex;
     await meter.addSats(12);
@@ -93,7 +96,7 @@ describe('ChannelMeter — the chip meters, the bridge keeps the books', () => {
   it('a payment that lands just after the light went out still buys its full seconds (catch-up)', async () => {
     const m = fakeMesh();
     const c = clock();
-    const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: c.now, inFlightMs: 2_600 });
+    const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: c.now, inFlightMs: 2_600, ...ONCE });
     await meter.start();
     await meter.addSats(12); // 10 s
     c.advance(9_000); // 1 s left now, but the commitment lands 2.6 s later
@@ -105,7 +108,7 @@ describe('ChannelMeter — the chip meters, the bridge keeps the books', () => {
 
   it('a commitment the injector never broadcast does not advance the books', async () => {
     const m = fakeMesh(false);
-    const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: clock().now });
+    const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: clock().now, ...ONCE });
     const r = await meter.addSats(12);
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/broadcast/);
@@ -118,11 +121,11 @@ describe('ChannelMeter — the chip meters, the bridge keeps the books', () => {
     const statePath = join(dir, 'channel.json');
     const c = clock();
     const m1 = fakeMesh();
-    const a = new ChannelMeter({ mesh: m1.mesh, key: KEY, now: c.now, statePath });
+    const a = new ChannelMeter({ mesh: m1.mesh, key: KEY, now: c.now, statePath, ...ONCE });
     await a.start();
     await a.addSats(12);
     const m2 = fakeMesh();
-    const b = new ChannelMeter({ mesh: m2.mesh, key: KEY, now: c.now, statePath });
+    const b = new ChannelMeter({ mesh: m2.mesh, key: KEY, now: c.now, statePath, ...ONCE });
     await b.start();
     await b.addSats(12);
     const old = a.channelIdHex;
@@ -133,6 +136,75 @@ describe('ChannelMeter — the chip meters, the bridge keeps the books', () => {
       { kind: 'open', id: b.channelIdHex },
       { kind: 'commit', id: b.channelIdHex, seq: 1, share: 12 },
     ]);
+  });
+});
+
+describe('ChannelMeter — radio redundancy (ESP-NOW broadcast is unacked)', () => {
+  const kinds = (sent: Sent[]) => sent.map((x) => (x.kind === 'commit' || x.kind === 'close' ? `${x.kind}${x.seq}/${x.share}` : x.kind));
+
+  it('by default sends OPEN twice, and the commitment twice — answering the payer after the first copy', async () => {
+    const sent: Sent[] = [];
+    let acks = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const mesh: MeshPort = {
+      async broadcast(cell) { sent.push(decode(cell)); },
+      async awaitActivation() { acks++; if (acks === 4) await gate; return true; }, // hold the repeat's ack
+    };
+    const meter = new ChannelMeter({ mesh, key: KEY, now: clock().now });
+    await meter.start();
+    expect(kinds(sent)).toEqual(['open', 'open']);
+    const r = await meter.addSats(12); // resolves while the repeat is still on the air
+    expect(r.ok).toBe(true);
+    expect(acks).toBe(4);
+    release();
+    await meter.flush();
+    expect(kinds(sent)).toEqual(['open', 'open', 'commit1/12', 'commit1/12']);
+  });
+
+  it('after dark: re-sends the last commitment once, then CLOSE twice, OPEN twice, commitment twice', async () => {
+    const m = fakeMesh();
+    const c = clock();
+    const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: c.now });
+    await meter.start();
+    await meter.addSats(12);
+    await meter.flush();
+    m.sent.length = 0;
+    c.advance(60_000);
+    await meter.addSats(12);
+    await meter.flush();
+    expect(kinds(m.sent)).toEqual(['commit1/12', 'close1/12', 'close1/12', 'open', 'open', 'commit1/12', 'commit1/12']);
+  });
+
+  it('re-sends OPEN once before a commitment when the last open is over 10 s old', async () => {
+    const m = fakeMesh();
+    const c = clock();
+    const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: c.now });
+    await meter.start();
+    await meter.addSats(72);
+    c.advance(5_000);
+    await meter.addSats(12); // open is 5 s old: no re-open
+    c.advance(11_000);
+    await meter.addSats(12); // 16 s old: one re-open first
+    await meter.flush();
+    expect(kinds(m.sent)).toEqual([
+      'open', 'open',
+      'commit1/72', 'commit1/72',
+      'commit2/84', 'commit2/84',
+      'open', 'commit3/96', 'commit3/96',
+    ]);
+  });
+
+  it('a failed repeat does not fail the payment or touch the books', async () => {
+    let n = 0;
+    const mesh: MeshPort = { async broadcast() {}, async awaitActivation() { n++; return n !== 4; } };
+    const meter = new ChannelMeter({ mesh, key: KEY, now: clock().now });
+    await meter.start(); // acks 1, 2
+    const r = await meter.addSats(12); // ack 3
+    await meter.flush(); // ack 4 fails (the repeat)
+    expect(r.ok).toBe(true);
+    expect(meter.status().seq).toBe(1);
+    expect(meter.status().satsPaid).toBe(12);
   });
 });
 
@@ -152,7 +224,7 @@ function pay(sats: number, n: number): string {
 
 function meteredSetup() {
   const m = fakeMesh();
-  const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: clock().now });
+  const meter = new ChannelMeter({ mesh: m.mesh, key: KEY, now: clock().now, ...ONCE });
   const bridge = new X402CellBridge({
     offer: OFFER, walletKey: KEY, mesh: m.mesh,
     verifier: new Brc29OnchainVerifier(RECEIVE_SCRIPT, { maxSats: 100 }),
@@ -186,7 +258,7 @@ describe('light server --metered', () => {
     expect(body.secondsAdded).toBe(30);
     expect(body.message).toMatch(/30 s of light added/);
     const commits = m.sent.filter((s) => s.kind === 'commit');
-    expect(commits.map((s) => s.share)).toEqual([36]);
+    expect([...new Set(commits.map((s) => s.share))]).toEqual([36]);
     const meterNow = await (await call('/meter')).json();
     expect(meterNow.metered).toBe(true);
     expect(meterNow.secondsLeft).toBeCloseTo(30, 0);
