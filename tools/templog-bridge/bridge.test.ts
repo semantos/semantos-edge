@@ -8,7 +8,7 @@
  * Run: bun test tools/templog-bridge/bridge.test.ts
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mintCell } from '../x402-bridge/cell-codec.js';
@@ -25,7 +25,7 @@ import {
   type SampleFields,
 } from './codec.js';
 import { TempLogStore, type JournalRecord, type SampleRecord } from './store.js';
-import { TempLogBridge, httpPoster, pump, splitLines, type PostBody } from './bridge.js';
+import { TempLogBridge, httpPoster, main, pump, splitLines, tokenMayGoTo, type PostBody } from './bridge.js';
 import { SimWorld, runScenario } from './sim.js';
 
 const MAC = '58:e6:c5:1a:8b:28';
@@ -257,6 +257,96 @@ describe('--post', () => {
       expect(received).toEqual([{ type: 'application/json', body }]);
       status = 503;
       await expect(post(body)).rejects.toThrow('503');
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+// ── --token-file: the server's operator token ───────────────────────
+
+// The phase-0 server takes readings only from its operator: a POST needs
+// `Authorization: Bearer <token>`. The bridge reads the token from a file (the
+// server keeps its own in its data directory as operator-token), never from
+// argv, where every process on the machine could read it.
+
+describe('--token-file', () => {
+  const TOKEN = 'c0ffee'.repeat(11);
+  const body: PostBody = { mac: MAC, logId: 'a1b2c3d4', lostThrough: 0, samples: [] };
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'templog-token-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  test('httpPoster sends the token as a bearer token, and no authorization at all without one', async () => {
+    const seen: (string | null)[] = [];
+    const server = Bun.serve({ port: 0, fetch(req) { seen.push(req.headers.get('authorization')); return new Response('ok'); } });
+    try {
+      await httpPoster(`http://127.0.0.1:${server.port}/r`, { token: 'tok-123' })(body);
+      await httpPoster(`http://127.0.0.1:${server.port}/r`)(body);
+      expect(seen).toEqual(['Bearer tok-123', null]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('a 401 says the server wants its operator token, and where to give it', async () => {
+    const server = Bun.serve({ port: 0, fetch: () => new Response('', { status: 401 }) });
+    try {
+      await expect(httpPoster(`http://127.0.0.1:${server.port}/r`)(body)).rejects.toThrow(/401.*--token-file/);
+      await expect(httpPoster(`http://127.0.0.1:${server.port}/r`, { token: 'stale' })(body)).rejects.toThrow(/401.*--token-file/);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('a token goes over https, or over plain http to this machine; nowhere else', () => {
+    for (const u of ['https://wine.semantos.me/api/logger/samples', 'http://localhost:5221/x', 'http://127.0.0.1:5221/x', 'http://[::1]:5221/x']) {
+      expect({ u, ok: tokenMayGoTo(new URL(u)) }).toEqual({ u, ok: true });
+    }
+    for (const u of ['http://wine.semantos.me/api/logger/samples', 'http://192.168.1.20:5221/x', 'http://localhost.example.com/x']) {
+      expect({ u, ok: tokenMayGoTo(new URL(u)) }).toEqual({ u, ok: false });
+    }
+  });
+
+  test('the CLI refuses a token it would send in the clear, a token with nowhere to go, and a file with no token in it', async () => {
+    const good = join(dir, 'operator-token');
+    writeFileSync(good, `${TOKEN}\n`);
+    const empty = join(dir, 'empty');
+    writeFileSync(empty, '\n');
+    const twoWords = join(dir, 'two-words');
+    writeFileSync(twoWords, `${TOKEN} ${TOKEN}\n`);
+    const out = join(dir, 'readings.jsonl');
+    writeFileSync(out, '');
+    const local = 'http://127.0.0.1:9/api/logger/samples';
+    expect(await main(['--replay', '--out', out, '--post', 'http://wine.example/api/logger/samples', '--token-file', good])).toBe(2);
+    expect(await main(['--sim', '--token-file', good])).toBe(2);
+    expect(await main(['--replay', '--out', out, '--post', local, '--token-file', empty])).toBe(2);
+    expect(await main(['--replay', '--out', out, '--post', local, '--token-file', twoWords])).toBe(2);
+    expect(await main(['--replay', '--out', out, '--post', local, '--token-file', join(dir, 'missing')])).toBe(2);
+  });
+
+  test('--replay with the token file gets past a server that wants it, and not without', async () => {
+    const tokenFile = join(dir, 'operator-token');
+    writeFileSync(tokenFile, `${TOKEN}\n`);
+    const out = join(dir, 'readings.jsonl');
+    writeFileSync(out, JSON.stringify({
+      kind: 'sample', mac: MAC, logId: 'a1b2c3d4', seq: 1, bootId: 1, uptimeS: 60, centiC: 1600, flags: 0,
+      tUnix: 1_790_000_060, anchor: 'receipt', policyMinCenti: -200, policyMaxCenti: 2800, receivedUnixS: 1_790_000_060,
+    }) + '\n');
+    const seen: (string | null)[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const auth = req.headers.get('authorization');
+        seen.push(auth);
+        return auth === `Bearer ${TOKEN}` ? Response.json({ ok: true }) : new Response('', { status: 401 });
+      },
+    });
+    try {
+      const url = `http://127.0.0.1:${server.port}/api/logger/samples`;
+      expect(await main(['--replay', '--out', out, '--post', url])).toBe(1);
+      expect(await main(['--replay', '--out', out, '--post', url, '--token-file', tokenFile])).toBe(0);
+      expect(seen).toEqual([null, `Bearer ${TOKEN}`]);
     } finally {
       server.stop(true);
     }

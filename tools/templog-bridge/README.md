@@ -28,6 +28,10 @@ bun tools/templog-bridge/bridge.ts --sim
 
 # the server was down: send what the JSONL holds to it again
 bun tools/templog-bridge/bridge.ts --replay --out readings.jsonl --post http://localhost:5221/api/logger/samples
+
+# a server that takes readings only from its operator (semantos-core's phase-0 wine server)
+bun tools/templog-bridge/bridge.ts --port /dev/cu.usbmodemXXXX --post http://localhost:5221/api/logger/samples \
+  --token-file ~/.tessera-phase0/<winery>/operator-token
 ```
 
 | Option | |
@@ -35,6 +39,7 @@ bun tools/templog-bridge/bridge.ts --replay --out readings.jsonl --post http://l
 | `--port <tty>` | the gateway's serial port. The bridge sets it to raw with no echo (`stty -f`, or `-F` on Linux), reads it with `cat` and writes AK lines to it. Raw mode matters: a TL line is 2,078 characters, more than a canonical-mode line holds on macOS. If the port disappears, for example when the gateway resets, the bridge waits and reopens it. |
 | `--out <file>` | the JSONL record, default `templog-readings.jsonl` in the current directory. Append-only; a restart carries on from it. |
 | `--post <url>` | also POST each batch's new samples as JSON. See below. |
+| `--token-file <file>` | the server's operator token, sent with each POST as `Authorization: Bearer <token>`. It is read from a file (the phase-0 server keeps its own as `operator-token` in its data directory), never taken on the command line, where any process on the machine could read it. It goes only over https, or plain http to this machine. A 401 is logged with what to do, and the readings stay in the JSONL for `--replay`. |
 | `--replay` | send every sample the `--out` file holds to `--post` again, grouped by log, oldest first, at most 500 per POST. For after the server was down: the ack never waits for a POST, so the node has let those readings go and the JSONL is the only copy. The server drops what it already holds by (mac, logId, seq), so replaying twice is harmless. Exits non-zero if any POST failed. |
 | `--sim` | no hardware. A synthetic node goes through first contact, a lost ack (so a duplicate), another gateway acking some readings (so a gap, then a replay), two reboots (all three time rules) and ten hours out of range (its ring wraps, so a loss). It writes to a fresh temp file unless you pass `--out`, then prints where it wrote. |
 
