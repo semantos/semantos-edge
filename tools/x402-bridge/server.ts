@@ -126,7 +126,7 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
 // --real-payment derives a recoverable receive key from Metanet Desktop
 // (:3321, the same wallet that funds the MNCA anchor), advertises it, and
 // verifies the agent's tx actually pays it (≤ --max-sats cap) before
-// broadcasting via ARC and actuating. Without the flag the bridge runs the
+// broadcasting via ARCADE and actuating. Without the flag the bridge runs the
 // simulated verifier (no real money).
 const realPayment = args.includes('--real-payment');
 const metanetBase = flag('--metanet') ?? METANET_BASE;
@@ -160,7 +160,7 @@ if (realPayment) {
   bridgeCfg.verifier = new Brc29OnchainVerifier(receiveScriptHex, { maxSats });
   bridgeCfg.broadcastOnVerify = bridgeBroadcast;
   bridgeCfg.arc = {};
-  payLabel = `MAINNET — pay-to ${receiveScriptHex.slice(0, 12)}… (cap ${maxSats} sats), ${bridgeBroadcast ? 'bridge broadcasts via ARC (SDK)' : 'payer-broadcast, bridge verifies'}`;
+  payLabel = `MAINNET — pay-to ${receiveScriptHex.slice(0, 12)}… (cap ${maxSats} sats), ${bridgeBroadcast ? 'bridge broadcasts via ARCADE' : 'payer-broadcast, bridge verifies'}`;
 }
 
 const bridge = new X402CellBridge(bridgeCfg);

@@ -16,7 +16,7 @@
  *   help | quit
  *
  *   bun metered-rental.ts            # auto-discovers the two boards, no mainnet settlement
- *   bun metered-rental.ts --settle   # enable Metanet+ARC mainnet settlement on close
+ *   bun metered-rental.ts --settle   # enable Metanet+ARCADE mainnet settlement on close
  */
 
 import readline from 'node:readline';
@@ -134,7 +134,7 @@ async function close(): Promise<void> {
   }
   // Settle the metered total on-chain: the operator collects device_share sats.
   try {
-    out('settling device_share on-chain (Metanet + ARC)...');
+    out('settling device_share on-chain (Metanet + ARCADE)...');
     const opPubkey = await getPublicKey({ identityKey: true });
     const action = await createAction([{ lockingScript: p2pkhScriptHexFromPubkey(opPubkey), satoshis: deviceShare, outputDescription: 'semantos-edge metered-rental settlement' }],
                                       'semantos-edge: channel settlement');

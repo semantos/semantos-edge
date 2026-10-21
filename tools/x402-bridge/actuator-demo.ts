@@ -11,7 +11,7 @@
  *   a | activate   valid authorization → device ACTUATES its own output (5 s)
  *   t | tamper     one sig byte flipped → device REFUSES → output stays off
  *   pay [sats]     (optional, requires --real-payment) real on-chain payment to the operator via
- *                  Metanet+ARC → real txid; the next `a` commits to that txid,
+ *                  Metanet+ARCADE → real txid; the next `a` commits to that txid,
  *                  so the activation is bound to a settled payment (x402 shape).
  *
  * This is the honest "how it actually works": chain settles the payment (a
@@ -20,7 +20,7 @@
  * the consequence lives on the device.
  *
  *   bun actuator-demo.ts                  # auto-discovers the two boards, no mainnet payment
- *   bun actuator-demo.ts --real-payment   # enable Metanet+ARC payment command
+ *   bun actuator-demo.ts --real-payment   # enable Metanet+ARCADE payment command
  */
 
 import readline from 'node:readline';
@@ -137,7 +137,7 @@ async function pay(satsArg?: string): Promise<void> {
     return out('\x1b[33mpayment disabled by default; restart with --real-payment to broadcast on mainnet\x1b[0m');
   }
   const sats = Math.max(1, parseInt(satsArg ?? '1000', 10));
-  out(`agent paying the operator ${sats} sats on-chain (Metanet + ARC)...`);
+  out(`agent paying the operator ${sats} sats on-chain (Metanet + ARCADE)...`);
   const opPubkey = await getPublicKey({ identityKey: true });
   const scriptHex = p2pkhScriptHexFromPubkey(opPubkey);
   const action = await createAction([{ lockingScript: scriptHex, satoshis: sats, outputDescription: 'semantos-edge actuator rental payment' }],

@@ -89,7 +89,7 @@ export async function createAction(
 export function rawTxHexFromCreateAction(r: CreateActionResult): string | null {
   if (typeof r.rawTx === 'string') return r.rawTx;
   if (Array.isArray(r.tx)) return Buffer.from(r.tx).toString('hex');
-  if (typeof r.beef === 'string') return r.beef; // BEEF; ARC accepts BEEF too
+  if (typeof r.beef === 'string') return r.beef; // BEEF; the broadcaster sends it to ARCADE as EF
   if (Array.isArray(r.beef)) return Buffer.from(r.beef).toString('hex');
   return null;
 }

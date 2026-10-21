@@ -114,6 +114,27 @@ describe('the bridge broadcasts to ARCADE, in extended format, judged by txStatu
     if (!r.ok) expect(r.reason).toContain('extended format');
   });
 
+  test('an EF transaction is sent as the EF it is', async () => {
+    const spend = spendWithAncestry();
+    await spend.sign();
+    const calls = answerWith(202, { txid: spend.id('hex'), txStatus: 'RECEIVED' });
+
+    const r = await broadcastTxHex(spend.toHexEF());
+
+    expect(r).toEqual({ ok: true, txid: spend.id('hex') });
+    expect(Utils.toHex(Array.from(calls[0]!.body))).toBe(spend.toHexEF());
+  });
+
+  test('a wallet\'s Atomic BEEF is sent as EF', async () => {
+    const spend = spendWithAncestry();
+    await spend.sign();
+    const calls = answerWith(202, { txid: spend.id('hex'), txStatus: 'RECEIVED' });
+
+    await broadcastTxHex(Utils.toHex(spend.toAtomicBEEF()));
+
+    expect(Utils.toHex(Array.from(calls[0]!.body))).toBe(spend.toHexEF());
+  });
+
   test('garbage is refused before any request is made', async () => {
     const calls = answerWith(202, {});
     const r = await broadcastTxHex('zz');

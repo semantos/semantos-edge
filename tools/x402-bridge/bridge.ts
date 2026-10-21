@@ -73,7 +73,7 @@ export interface BridgeConfig {
   receiveScriptHex?: string;
   /**
    * If set, the bridge broadcasts the payer's (signed, un-broadcast) tx to
-   * chain via ARC on successful verify and returns that network txid — the
+   * chain via ARCADE on successful verify and returns that network txid — the
    * same path that anchored the MNCA cell. If false, the bridge trusts the
    * verifier-derived txid (the payer already broadcast).
    */
@@ -275,13 +275,13 @@ export class X402CellBridge {
 
     // Settle on-chain. Metanet Desktop's createAction returns a SIGNED but
     // UN-broadcast tx (+ a computed txid) — like wallet.html, the app must
-    // broadcast. So in broadcast mode the bridge actually posts to ARC and
+    // broadcast. So in broadcast mode the bridge actually posts to ARCADE and
     // captures the network txid; the payer's computed txid is NOT trusted as
     // proof of settlement. Only when broadcast is disabled (a wallet that
     // pre-broadcasts) do we fall back to the payer/verifier txid.
     let txid: string | undefined;
     if (this.broadcastOnVerify && typeof payment.transaction === 'string') {
-      console.log(`[bridge] broadcasting payment to ARC (${price} sats)…`);
+      console.log(`[bridge] broadcasting payment to ARCADE (${price} sats)…`);
       const b = await broadcastTxHex(payment.transaction, this.arc);
       if (!b.ok) {
         console.error(`[bridge] payment broadcast FAILED: ${b.reason}`);

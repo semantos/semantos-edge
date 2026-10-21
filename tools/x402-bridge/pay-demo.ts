@@ -8,7 +8,7 @@
  * 2. Fund + sign a real BSV tx paying that script via Metanet Desktop
  *    (:3321 createAction) — the same wallet/funding path as the MNCA anchor.
  * 3. POST it as x-bsv-payment; the bridge verifies it pays the bridge,
- *    broadcasts via ARC, actuates the C6, and returns the real txid.
+ *    broadcasts via ARCADE, actuates the C6, and returns the real txid.
  *
  * MAINNET: this moves real value (the offer price, ~100 sats). Run only
  * against a Metanet Desktop you control + a bridge started with --real-payment.

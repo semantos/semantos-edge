@@ -436,7 +436,7 @@ async function injectCapabilityCert(channelId: Uint8Array, channelIdHex: string,
 }
 
 // Full x402 mainnet flow: derive a recoverable receive key from Metanet
-// Desktop, fund + sign a payment to it (createAction), broadcast via ARC,
+// Desktop, fund + sign a payment to it (createAction), broadcast via ARCADE,
 // then inject the wallet-signed actuator_activate cell so a device lights.
 // Returns the network txid (confirm on WhatsOnChain).
 async function payAndActuate(): Promise<{ txid: string }> {
@@ -449,7 +449,7 @@ async function payAndActuate(): Promise<{ txid: string }> {
   const rawTx = rawTxHexFromCreateAction(ca);
   if (!rawTx) throw new Error('createAction returned no tx');
   const b = await broadcastTxHex(rawTx);
-  if (!b.ok) throw new Error(`ARC broadcast: ${b.reason}`);
+  if (!b.ok) throw new Error(`ARCADE broadcast: ${b.reason}`);
   broadcast(`[ctl] payment ON-CHAIN → ${b.txid}`);
   const { cell, sig } = buildActuatorActivate(OFFER, WALLET, OWNER, BigInt(Date.now()), actuatorCounter++);
   await injectCellSig(cell, sig);
@@ -635,7 +635,7 @@ function json(body: unknown, status = 200) {
 
 const server = Bun.serve({
   port: httpPort,
-  idleTimeout: 60, // pay-actuate / scada wait on Metanet Desktop + ARC
+  idleTimeout: 60, // pay-actuate / scada wait on Metanet Desktop + ARCADE
   async fetch(req) {
     const url = new URL(req.url);
     if (req.method === 'GET' && url.pathname === '/') {

@@ -62,14 +62,21 @@ function varint(n: number): number[] {
 interface TxIn  { txid: string; vout: number; sequence: number; }
 interface TxOut { sats: bigint; lockHex: string; }
 
-/** Serialise a raw BSV transaction (version=1). */
+/**
+ * Serialise a BSV transaction (version=1). With `prevouts`, one per input, the
+ * result is extended format (BRC-30 EF): the marker after the version, and each
+ * input followed by the satoshis and locking script of the output it spends.
+ * ARCADE takes only EF; the txid is the same either way.
+ */
 function serialiseTx(
   inputs:     TxIn[],
   outputs:    TxOut[],
   locktime:   number,
   scriptsigs: Uint8Array[],
+  prevouts?:  TxOut[],
 ): string {
   const b: number[] = [1, 0, 0, 0]; // version LE
+  if (prevouts) b.push(0, 0, 0, 0, 0, 0xef); // EF marker
   b.push(...varint(inputs.length));
   for (let i = 0; i < inputs.length; i++) {
     // prevTxid in raw (little-endian) order
@@ -81,6 +88,13 @@ function serialiseTx(
     b.push(...varint(ss.length), ...ss);
     const s = inputs[i].sequence;
     b.push(s & 0xff, (s >> 8) & 0xff, (s >> 16) & 0xff, (s >> 24) & 0xff);
+    if (prevouts) {
+      const p = prevouts[i];
+      if (!p) throw new Error(`serialiseTx: no prevout for input ${i}`);
+      const pv = new Uint8Array(8); writeU64LE(pv, 0, p.sats); b.push(...pv);
+      const ps = Buffer.from(p.lockHex, 'hex');
+      b.push(...varint(ps.length), ...ps);
+    }
   }
   b.push(...varint(outputs.length));
   for (const out of outputs) {
@@ -132,7 +146,7 @@ function signP2PKH(
 /**
  * Open a payment channel on BSV mainnet:
  *   1. Fund a P2PKH UTXO locked to walletKey via Metanet Desktop.
- *   2. Broadcast the funding tx via ARC.
+ *   2. Broadcast the funding tx via ARCADE.
  *   3. Derive channelId = txid_bytes[0..16].
  *   4. Pre-sign a refund tx (nLockTime = now + 24h) but don't broadcast it.
  *
@@ -165,7 +179,7 @@ export async function openChannel(
 
   // 2. Broadcast and extract on-chain txid
   const bcast = await broadcastTxHex(rawTx, opts.arcOpts ?? {});
-  if (!bcast.ok) throw new Error(`openChannel: ARC broadcast failed: ${bcast.reason}`);
+  if (!bcast.ok) throw new Error(`openChannel: ARCADE broadcast failed: ${bcast.reason}`);
   const txid = bcast.txid;
 
   // 3. Find the vout of our output (scan parsed tx — MD may add change outputs)
@@ -253,10 +267,12 @@ export async function settleChannel(
   ];
 
   const settleSig = signP2PKH(settleIns, settleOuts, 0, 0, BigInt(state.fundingSats), lockSc, walletKey);
-  const settleTxHex = serialiseTx(settleIns, settleOuts, 0, [settleSig]);
+  // EF, from the funding output the state already records: ARCADE refuses raw.
+  const fundingPrevout: TxOut = { sats: BigInt(state.fundingSats), lockHex };
+  const settleTxEF = serialiseTx(settleIns, settleOuts, 0, [settleSig], [fundingPrevout]);
 
-  const bcast = await broadcastTxHex(settleTxHex, arcOpts);
-  if (!bcast.ok) throw new Error(`settleChannel: ARC broadcast failed: ${bcast.reason}`);
+  const bcast = await broadcastTxHex(settleTxEF, arcOpts);
+  if (!bcast.ok) throw new Error(`settleChannel: ARCADE broadcast failed: ${bcast.reason}`);
 
   state.settled    = true;
   state.settleTxid = bcast.txid;

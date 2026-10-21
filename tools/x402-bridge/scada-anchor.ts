@@ -10,7 +10,7 @@
  * The cell IS the log entry: tamper-evident, ordered by the chain, and the
  * txid is the audit receipt. The 1-sat output is spendable by leafPk
  * (recoverable), so it can later be swept / superseded. Metanet Desktop
- * funds + signs the tx (createAction with an arbitrary lockingScript); ARC
+ * funds + signs the tx (createAction with an arbitrary lockingScript); ARCADE
  * broadcasts it.
  */
 

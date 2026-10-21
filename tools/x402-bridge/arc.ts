@@ -43,16 +43,26 @@ interface ArcadeReply {
   extraInfo?: string;
 }
 
-/** Parse BEEF hex, else raw hex. */
+/**
+ * Parse BEEF or Atomic BEEF hex, else EF hex, else raw hex. EF is tried before
+ * raw because a raw parse of EF bytes does not always throw: it can misread
+ * the EF marker as an empty input list.
+ */
 function parseTx(txHex: string): Transaction | null {
   try {
     return Transaction.fromHexBEEF(txHex);
   } catch {
-    try {
-      return Transaction.fromHex(txHex);
-    } catch {
-      return null;
-    }
+    /* not BEEF */
+  }
+  try {
+    return Transaction.fromHexEF(txHex);
+  } catch {
+    /* not EF */
+  }
+  try {
+    return Transaction.fromHex(txHex);
+  } catch {
+    return null;
   }
 }
 
