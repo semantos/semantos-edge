@@ -4,11 +4,11 @@
  *
  * Flow:
  *   1. fund  — Metanet Desktop (localhost:3321) funds a P2PK UTXO locked to a
- *              fresh demo key. Broadcast via ARC → real funding txid.
+ *              fresh demo key. Broadcast via ARCADE → real funding txid.
  *   2. g/b   — build a REAL spend of that UTXO (P2PK + OP_CHECKSIG, BIP-143
  *              sighash), inject it as a cellmesh.scripted.v0 cell. Board A
  *              broadcasts; board B runs the spend through the cell-engine.
- *                g → engine ACCEPTs  → we release the tx to ARC → real txid
+ *                g → engine ACCEPTs  → we release the tx to ARCADE → real txid
  *                b → one sig byte flipped → engine REJECTs → nothing broadcast
  *
  * The cell-engine's sighash is byte-identical to the canonical one miners
@@ -153,11 +153,13 @@ function buildGatedSpend(f: Funding, tamper: boolean): { frame: Buffer; broadcas
   const frame = Buffer.from(frameCell(cell, sig));
 
   const broadcast = async (): Promise<string> => {
-    // Attach the real unlock and ship the fully-signed tx (BEEF carries the
-    // funding ancestry so ARC can validate the input).
+    // Attach the real unlock and ship the fully-signed tx as EF: each input
+    // carries the funding output ARCADE validates it against. EF needs only
+    // that output, so it also works for a funding resumed from the state file,
+    // which keeps the raw tx without its ancestry.
     spend.inputs[0].unlockingScript = Script.fromBinary(Array.from(unlock));
-    const res = await broadcastTxHex(spend.toHexBEEF());
-    if (!res.ok) throw new Error(`ARC rejected: ${res.reason}`);
+    const res = await broadcastTxHex(spend.toHexEF());
+    if (!res.ok) throw new Error(`ARCADE rejected: ${res.reason}`);
     return res.txid;
   };
   return { frame, broadcast };
@@ -226,7 +228,9 @@ async function doFund(): Promise<void> {
   const wantHex = Buffer.from(p2pkLockOf(key)).toString('hex');
   const vout = tx.outputs.findIndex((o) => o.lockingScript.toHex() === wantHex);
   if (vout < 0) throw new Error('funded tx has no matching P2PK output');
-  const bc = await broadcastTxHex(action.beef ? rawHex : tx.toHex());
+  // The wallet's transaction as it came: its Atomic BEEF keeps the ancestry
+  // ARCADE needs. Re-serialising it as raw hex would drop that.
+  const bc = await broadcastTxHex(rawHex);
   if (!bc.ok) throw new Error(`funding broadcast failed: ${bc.reason}`);
   funding = { tx, vout, value: fundSats, key };
   saveFunding(funding); // crash-safe: resumable on restart
@@ -257,7 +261,7 @@ async function doSpend(kind: 'good' | 'bad'): Promise<void> {
 async function settle(): Promise<void> {
   if (!lastGood) return out('\x1b[31mnothing to settle — run `g` first\x1b[0m');
   if (DRY) { out('\x1b[33m[dry] would broadcast the last good spend (skipped)\x1b[0m'); return; }
-  out('releasing the tx to ARC...');
+  out('releasing the tx to ARCADE...');
   try {
     const txid = await lastGood();
     clearFunding(); // UTXO consumed
@@ -269,7 +273,7 @@ async function settle(): Promise<void> {
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'chain> ' });
 function out(s: string): void { readline.cursorTo(process.stdout, 0); readline.clearLine(process.stdout, 0); process.stdout.write(s + '\n'); rl.prompt(true); }
 const HELP = `commands:
-  fund        ${DRY ? 'fabricate a P2PK UTXO (no chain)' : 'fund + broadcast a real P2PK UTXO via Metanet+ARC'}
+  fund        ${DRY ? 'fabricate a P2PK UTXO (no chain)' : 'fund + broadcast a real P2PK UTXO via Metanet+ARCADE'}
   g | good    inject a REAL spend → engine ACCEPT → ${DRY ? '(would) ' : ''}settle on mainnet
   b | bad     inject a TAMPERED spend → engine REJECT → nothing settles
   settle      broadcast the last good spend (fallback if the watch missed ACCEPT)

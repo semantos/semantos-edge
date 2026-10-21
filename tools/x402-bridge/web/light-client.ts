@@ -8,7 +8,8 @@
  *
  * Bundled for the browser by light.ts (Bun.build) at server start.
  */
-import { WalletClient, Transaction, Utils } from '@bsv/sdk';
+import { WalletClient } from '@bsv/sdk';
+import { walletTxHex } from './wallet-tx';
 
 type Wallet = {
   createAction(args: unknown, originator?: string): Promise<{ txid?: string; tx?: number[] | Uint8Array }>;
@@ -56,19 +57,8 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Turn whatever the wallet returned into raw tx hex (the bridge parses raw or BEEF). */
-function txHex(tx: number[] | Uint8Array): string {
-  const bytes = Array.from(tx);
-  try {
-    return Transaction.fromAtomicBEEF(bytes).toHex();
-  } catch {
-    try {
-      return Transaction.fromBEEF(bytes).toHex();
-    } catch {
-      return Utils.toHex(bytes); // let the bridge try
-    }
-  }
-}
+/** The wallet's transaction as hex, ancestry kept: the bridge broadcasts it through ARCADE, which needs it. */
+const txHex = walletTxHex;
 
 async function poll(ticket: string): Promise<void> {
   for (;;) {
