@@ -104,12 +104,12 @@ firmware's actuator handler parses (verified against the wire in tests).
 
 Makes the payment leg real, reusing the exact path that anchored the MNCA
 cell on mainnet (`wallet.html`): **Metanet Desktop holds the keys** (BRC-42
-derivation + recovery), funds via `createAction`, and ARC broadcasts.
+derivation + recovery), funds via `createAction`, and ARCADE broadcasts.
 
 ```bash
 # 1. Metanet Desktop running + funded on localhost:3321
 # 2. bridge in real-payment mode (derives a recoverable receive key from MD,
-#    verifies the agent's tx pays it ≤ --max-sats, broadcasts via ARC):
+#    verifies the agent's tx pays it ≤ --max-sats, broadcasts via ARCADE):
 bun server.ts --port 4021 --real-payment --max-sats 1000 \
   --inject-port /dev/cu.usbmodemB --ack-port /dev/cu.usbmodemC --ack-from-mac <B-MAC>
 # 3. the agent pays (funds via MD createAction → bridge verifies + broadcasts):
@@ -119,7 +119,7 @@ bun pay-demo.ts --bridge http://localhost:4021
 Flow: discovery advertises `payTo.scriptHex` (MD-derived P2PKH) → agent funds
 that output via MD `createAction` → POST `x-bsv-payment {transaction}` →
 bridge `Brc29OnchainVerifier` confirms an output pays the bridge ≥ price
-(≤ cap) → broadcasts via ARC (`arc.ts`) → actuates the C6 → `200` with the
+(≤ cap) → broadcasts via ARCADE (`arc.ts`) → actuates the C6 → `200` with the
 real `txid` (+ `x-bsv-payment-txid` header). `whatsonchain.com/tx/<txid>`.
 
 Guardrails: `--max-sats` caps accepted/broadcast value; without `--real-payment`
