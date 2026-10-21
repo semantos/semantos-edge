@@ -236,9 +236,9 @@ settlement streams. See `docs/SMART-CITY-THROUGHPUT.md`.
 
 ## License
 
-This kit is released under the Open BSV License v4. It is open for use,
-modification, and redistribution on Bitcoin SV chains, with no warranty. See
-`LICENSE`.
+Open BSV License Version 6. Read `LICENSE` before assuming anything about what
+it permits: it is not an OSI licence, it grants no patent rights, and it binds
+derived software to BSV.
 
 ## Where the WASM blob comes from
 

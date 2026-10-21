@@ -4,7 +4,7 @@ url: "https://github.com/semantos/semantos-edge"
 issues: "https://github.com/semantos/semantos-edge/issues"
 maintainers:
   - "Todd Price <todd.price.aus@gmail.com>"
-license: "Open BSV License v4"
+license: "Open BSV License v6"
 tags:
   - wasm
   - cell-engine
