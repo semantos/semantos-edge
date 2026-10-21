@@ -88,17 +88,21 @@ a mock mesh (incl. underpayment-rejected and device-timeout→504).
   machine over a `MeshPort` interface.
 - `server.ts` — bun HTTP server wiring the endpoints.
 
-## Hardware leg (next step)
+## Hardware leg
 
-The bridge is host-validated end-to-end with a dry-run mesh (it logs the
-`actuator_activate.v0` cell and auto-acks). The live mesh leg needs **one
-firmware addition not yet in `main.c`**: a USB-CDC command that reads a
-framed cell off the bridge C6's serial and calls `cm_radio_send` to
-broadcast it (the ack half — reading `*** ACTUATOR ACTIVATED ***` from the
-destination C6's log — already works). With that command, a `SerialMeshPort`
-drops into the same `MeshPort` seam and the full agent→bridge→device path
-runs on real XIAOs. The produced cell bytes are already exactly what the
-firmware's actuator handler parses (verified against the wire in tests).
+By default the bridge runs against a dry-run mesh: it logs the
+`actuator_activate.v0` cell and auto-acks. The live leg is `SerialMeshPort`
+(`serial-mesh.ts`), which drops into the same `MeshPort` seam. It frames the
+wallet-signed cell as a CRC-32-checked hex line (`IJ <hex(cell||sig)> <crc>`)
+and writes it, in paced chunks, to an injector C6 over USB-Serial-JTAG. The
+`mesh_demo` firmware's `serial_inject_task` checks the CRC, rejects a garbled
+frame, and broadcasts a good one with `cm_radio_send_cell`; the rentable C6
+verifies and actuates, and its `*** ACTUATOR ACTIVATED ***` log line is the
+ack the bridge reads from the actuator's serial port. Pass `--inject-port`
+(and `--ack-port` on the server) to name the two ports; inject through a board
+that does not itself broadcast deck activations, so the actuator's `from=`
+is unambiguously the bridge. The cell bytes are exactly what the firmware's
+actuator handler parses, held by the wire tests.
 
 ## Real payment — MAINNET (`--real-payment`)
 
