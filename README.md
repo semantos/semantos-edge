@@ -1,9 +1,9 @@
-# semantos-edge-kit
+# semantos-edge
 
 **A Bitcoin-Script virtual machine, small enough to run on a microcontroller,
 networked into a self-organizing mesh.**
 
-`semantos-edge-kit` is the IoT / edge distribution of the Semantos cell-engine: a
+`semantos-edge` is the IoT / edge distribution of the Semantos cell-engine: a
 **36 KB** dual-stack pushdown automaton that executes Bitcoin Script extended
 with linear-type opcodes, packaged as a plug-and-play ESP-IDF component and
 wired into a small mesh stack with signed-policy hot-swap, capability-gated
@@ -52,7 +52,7 @@ parallel C implementation of the mesh core.
 ## What's in the box
 
 ```
-semantos-edge-kit/
+semantos-edge/
 ├── components/
 │   ├── semantos/                 the cell-engine itself
 │   │   ├── wasm/
@@ -73,11 +73,19 @@ semantos-edge-kit/
 ├── examples/
 │   ├── hello_cell/               minimal: prove the VM loads and runs
 │   ├── mesh_demo/                multi-board swarm, 20 Hz telemetry, signed deck
-│   └── cold_chain/               sensor → signed cell → anchor (cold-chain custody)
+│   ├── cold_chain/               sensor → signed cell → anchor (cold-chain custody)
+│   └── temp_logger/              store-and-forward temperature logger: node + gateway,
+│                                 every reading checked against a heat policy in the engine
 ├── tools/                        host-side (Bun + @bsv/sdk)
 │   ├── mesh-observer/            read-only USB viewer + live telemetry dashboard
 │   ├── x402-bridge/             agent pays an x402 endpoint → device actuates on-chain
-│   └── sign-cell-deck.ts        pre-signs the cell deck flashed into a device
+│   ├── templog-bridge/          host side of the temperature logger: store, ack, post, replay
+│   ├── templog-policy/          runs the embedded engine on the host to check a script
+│   │                            before it reaches a board
+│   ├── fleet/                   Plexus key derivation as the fleet's identity control plane
+│   ├── fleet-zig/               the same derivation in Zig on bsvz, with conformance vectors
+│   ├── sign-cell-deck.ts        pre-signs the cell deck flashed into a device
+│   └── domains.ts               generated domain-flag table (from fleet-zig)
 └── docs/
     ├── ADAPTERS.md              the 4 adapter patterns you implement
     ├── AI-PAIRING.md            how to use this repo with a coding agent
@@ -89,6 +97,7 @@ semantos-edge-kit/
     ├── SMART-CITY-THROUGHPUT.md smart-city throughput positioning
     ├── VM-ENFORCEMENT.md        what scripts actually accept/reject
     ├── CHALLENGE.md             "fun ideas for a Sunday" build list
+    ├── TEMP-LOGGER.md           the temperature logger, end to end
     └── x402-over-cells.md       the on-chain device-rental flow
 ```
 
@@ -256,13 +265,19 @@ zig build -Dembedded=true
 cp zig-out/bin/cell-engine-embedded.wasm \
    ../../../semantos-edge/components/semantos/wasm/
 
-# inside semantos-edge-kit
+# inside semantos-edge
 bun run opcode:parity
 ```
 
 `bun run opcode:parity` checks that the vendored edge blob is byte-identical
 to the current core embedded build and that the edge C wrapper exposes the
 entrypoint needed by `OP_BRANCHONOUTPUT`.
+
+The vendored blob is the July 2026 embedded build. The current core build is
+44 KB and calls a thirteenth host import, `host_consumed_set`, which the
+firmware's host table does not provide yet, so the parity check fails against
+current core and re-vendoring waits on that import. Until then the 12 host
+imports in `docs/HOST_IMPORTS.md` are the whole contract.
 
 ## Next
 
