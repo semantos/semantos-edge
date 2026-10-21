@@ -4,6 +4,8 @@
  *
  *   bun server.ts [--port 4021]
  *                 [--inject-port /dev/cu.usbmodemXXX --ack-port /dev/cu.usbmodemYYY]
+ *                 [--ack-from-mac aa:bb:.. | --ack-match "<log substring>"]
+ *                 [--metered [--meter-options 12,36,72] [--meter-state <file>]]
  *
  * A Dolphin Milk-style agent pays this endpoint over BSV-native x402; the
  * bridge actuates a rentable cell-mesh device. See README.md.
@@ -27,6 +29,10 @@ import { X402CellBridge, type MeshPort, type BridgeConfig } from './bridge.js';
 import { SerialMeshPort } from './serial-mesh.js';
 import { getPublicKey, p2pkhScriptHexFromPubkey, METANET_BASE, DEFAULT_ORIGIN } from './metanet.js';
 import { Brc29OnchainVerifier } from './onchain-payment.js';
+import { makeLightHandler, buildLightClient } from './light.js';
+import { ChannelMeter } from './meter.js';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 // ── Provisioned offer (matches sign-cell-deck.ts RENTABLE_* constants) ──
 // Cell authority. The device verifies every signed cell against the trust
@@ -84,14 +90,36 @@ const ackPort = flag('--ack-port');
 // can't false-match the deck's own (device-A) activations on the mesh.
 const ackFromMac = flag('--ack-from-mac');
 
+// Optional: override the ack line outright. With only ONE mesh_demo board on
+// the bench there is no second board to actuate; `--ack-port <same as inject>
+// --ack-match "CELL INJECTED"` acks on the injector's own ack-blink instead.
+const ackMatchFlag = flag('--ack-match');
+
+// --metered: sats buy seconds, metered by the boards themselves. Only the
+// injector (A) needs a cable; the actuators can run on power packs. The
+// bridge's ack is A's own "*** CELL BROADCAST ***" line (it put the cell on
+// the air) — nobody can read a board on a power pack.
+const metered = args.includes('--metered');
+
 let mesh: MeshPort = dryRunMesh;
 let meshLabel = 'dry-run (auto-ACK)';
-if (injectPort && ackPort) {
-  const ackMatch = ackFromMac
-    ? `*** ACTUATOR ACTIVATED *** from=[${ackFromMac}]`
-    : undefined;
-  mesh = new SerialMeshPort({ injectPort, ackPort, ackMatch });
-  meshLabel = `serial — inject ${injectPort}, ack ${ackPort}${ackFromMac ? ` (from=${ackFromMac})` : ''}`;
+let serialMesh: SerialMeshPort | undefined;
+if (metered && injectPort) {
+  const ackMatch = ackMatchFlag ?? '*** CELL BROADCAST ***';
+  serialMesh = new SerialMeshPort({ injectPort, ackPort: ackPort ?? injectPort, ackMatch });
+  mesh = serialMesh;
+  meshLabel = `serial — inject ${injectPort}, ack ${ackPort ?? injectPort} on "${ackMatch}"`;
+} else if (injectPort && ackPort) {
+  const ackMatch = ackMatchFlag
+    ?? (ackFromMac ? `*** ACTUATOR ACTIVATED *** from=[${ackFromMac}]` : undefined);
+  serialMesh = new SerialMeshPort({ injectPort, ackPort, ackMatch });
+  mesh = serialMesh;
+  meshLabel = `serial — inject ${injectPort}, ack ${ackPort} on "${ackMatch ?? '*** ACTUATOR ACTIVATED ***'}"`;
+}
+// Release the serial port on exit: the ack reader is a `cat` child that
+// would otherwise outlive the server and hold the tty.
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => { serialMesh?.dispose(); process.exit(0); });
 }
 
 // ── Real-payment mode (MAINNET) ───────────────────────────────────────
@@ -106,7 +134,16 @@ const metanetOrigin = flag('--metanet-origin') ?? DEFAULT_ORIGIN;
 const maxSats = flag('--max-sats') ? Number(flag('--max-sats')) : 1000;
 let payLabel = 'simulated (no real tx)';
 
-const bridgeCfg: BridgeConfig = { offer: OFFER, walletKey: WALLET, mesh };
+const bridgeCfg: BridgeConfig = { offer: OFFER, walletKey: WALLET, mesh, maxSats };
+let meter: ChannelMeter | undefined;
+if (metered) {
+  const options = (flag('--meter-options') ?? '12,36,72').split(',').map(Number).filter((n) => n > 0 && n <= maxSats);
+  if (options.length === 0) throw new Error('--meter-options: no amount fits under --max-sats');
+  const statePath = flag('--meter-state') ?? join(homedir(), '.semantos-light-channel.json');
+  meter = new ChannelMeter({ mesh, key: WALLET, statePath });
+  bridgeCfg.meter = meter;
+  bridgeCfg.meterOptions = options;
+}
 if (realPayment) {
   const offerIdHex = Buffer.from(OFFER.offerId).toString('hex');
   const receivePk = await getPublicKey(
@@ -128,29 +165,36 @@ if (realPayment) {
 
 const bridge = new X402CellBridge(bridgeCfg);
 
-function send(r: { status: number; headers: Record<string, string>; body: unknown }): Response {
-  return new Response(JSON.stringify(r.body), { status: r.status, headers: r.headers });
+if (meter) {
+  console.log(`[meter] announcing channel to the boards (state ${flag('--meter-state') ?? '~/.semantos-light-channel.json'})…`);
+  const ok = await meter.start();
+  console.log(ok
+    ? `[meter] channel ${meter.channelIdHex.slice(0, 12)}… on the air — boards light ~${meter.status().satsPerSecond} sats/s`
+    : '[meter] WARNING: the injector did not broadcast the channel_open — check board A');
+}
+
+// Bundle the phone page's client now, so a build failure shows at start
+// rather than on the first phone.
+try {
+  const js = await buildLightClient();
+  console.log(`[light] phone client bundled (${Math.round(js.length / 1024)} KB)`);
+} catch (e) {
+  console.error(`[light] phone client build FAILED: ${(e as Error).message}`);
 }
 
 const server = Bun.serve({
   port,
-  // activate() may broadcast (with best-effort retries) + wait for the
-  // device ack — longer than Bun's 10s default request timeout.
-  idleTimeout: 30,
-  async fetch(req) {
-    const url = new URL(req.url);
-    if (req.method === 'GET' && url.pathname === '/.well-known/x402-info') {
-      return send(bridge.discover());
-    }
-    if (req.method === 'POST' && url.pathname === '/actuator/activate') {
-      return send(await bridge.activate(req.headers.get('x-bsv-payment')));
-    }
-    return new Response(JSON.stringify({ error: 'not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
-  },
+  // A blocking (non-async) activate waits its turn in the queue + the device
+  // ack. The phone page uses ?async=1 and polls, so this only matters to agents.
+  idleTimeout: 255,
+  fetch: makeLightHandler(bridge),
 });
 
 console.log(`x402↔cell bridge listening on http://localhost:${server.port}`);
 console.log(`  GET  /.well-known/x402-info     — free discovery (price=${OFFER.costSats} sats)`);
-console.log(`  POST /actuator/activate          — 402 challenge → pay via x-bsv-payment → actuate`);
+console.log(`  POST /actuator/activate          — 402 challenge → pay via x-bsv-payment → queued actuation`);
+console.log(`  GET  /  (/light)                 — phone page: "turn the light on"`);
+console.log(`  GET  /queue?ticket=<txid>        — place in the queue / lit / failed`);
 console.log(`  mesh:    ${meshLabel}`);
+console.log(`  mode:    ${metered ? `METERED — sats buy seconds (${bridgeCfg.meterOptions!.join('/')} sats), GET /meter` : 'blink — one activation per payment'}`);
 console.log(`  payment: ${payLabel}`);
