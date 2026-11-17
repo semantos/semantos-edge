@@ -157,6 +157,13 @@ m3ApiRawFunction(trampoline_host_fetch_cell) {
     m3ApiReturn(semantos_host_fetch_cell((uint8_t)octave, slot, offset, out_ptr));
 }
 
+m3ApiRawFunction(trampoline_host_consumed_set) {
+    m3ApiReturnType(uint32_t);
+    m3ApiGetArg   (uint32_t,  op);
+    m3ApiGetArgMem(const uint8_t *, id32);
+    m3ApiReturn(semantos_host_consumed_set(op, id32));
+}
+
 m3ApiRawFunction(trampoline_hostDbOpenCursor) {
     m3ApiReturnType(uint32_t);
     m3ApiGetArg(uint32_t, filter_ptr);
@@ -203,6 +210,7 @@ static M3Result link_host_imports(IM3Module mod) {
     LINK(hostDbOpenCursor,    "i(ii)");
     LINK(hostDbCursorPull,    "i(ii)");
     LINK(hostDbCursorClose,   "v(i)");
+    LINK(host_consumed_set,   "i(i*)");
 
 #undef LINK
     return m3Err_none;

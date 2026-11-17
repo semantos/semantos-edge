@@ -22,6 +22,8 @@ export async function openEngine(path = WASM): Promise<Engine> {
   const module = new WebAssembly.Module(await Bun.file(path).arrayBuffer());
   const host: Record<string, () => number> = {};
   for (const imp of WebAssembly.Module.imports(module)) host[imp.name] = () => FAIL;
+  // E3 consumed set: answer "absent" (2), as the board does, so a consume fails closed.
+  if ('host_consumed_set' in host) host.host_consumed_set = () => 2;
   const instance = new WebAssembly.Instance(module, { host });
   const x = instance.exports as Record<string, any>;
   const memory = x.memory as WebAssembly.Memory;

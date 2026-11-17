@@ -4,7 +4,7 @@
 networked into a self-organizing mesh.**
 
 `semantos-edge` is the IoT / edge distribution of the Semantos cell-engine: a
-**36 KB** dual-stack pushdown automaton that executes Bitcoin Script extended
+**49 KB** dual-stack pushdown automaton that executes Bitcoin Script extended
 with linear-type opcodes, packaged as a plug-and-play ESP-IDF component and
 wired into a small mesh stack with signed-policy hot-swap, capability-gated
 forwarding, on-device metering, and BSV settlement.
@@ -56,7 +56,7 @@ semantos-edge/
 ├── components/
 │   ├── semantos/                 the cell-engine itself
 │   │   ├── wasm/
-│   │   │   └── cell-engine-embedded.wasm   (36 KB — Bitcoin Script + linear types)
+│   │   │   └── cell-engine-embedded.wasm   (49 KB — Bitcoin Script + linear types)
 │   │   ├── include/              public API + the 4 adapter callback types
 │   │   ├── src/
 │   │   │   ├── semantos.c                 lifecycle + kernel wrappers
@@ -90,7 +90,7 @@ semantos-edge/
     ├── ADAPTERS.md              the 4 adapter patterns you implement
     ├── AI-PAIRING.md            how to use this repo with a coding agent
     ├── CLEAVAGE-APPARATUS.md    what is and is not included from core cleavage
-    ├── HOST_IMPORTS.md          the 12 host imports the kernel calls
+    ├── HOST_IMPORTS.md          the 13 host imports the kernel calls
     ├── OPCODE-PARITY.md         keeping edge opcodes matched to core
     ├── RESEARCH-COLLABORATION.md academic / lab collaboration brief
     ├── ZIG-ROADMAP.md           Zig mesh-core architecture and target policy
@@ -107,7 +107,7 @@ semantos-edge/
 
 The cell-engine runs scripts inside a pure sandbox: no I/O, no async, no direct
 side effects. Everything the kernel wants from the outside world arrives through
-**twelve host imports** plus **seven adapter callbacks** grouped into **four
+**thirteen host imports** plus **seven adapter callbacks** grouped into **four
 patterns**. mbedTLS, which ESP-IDF already ships, covers the crypto imports
 natively. The four adapter patterns are where you bind the VM to your hardware.
 
@@ -141,7 +141,7 @@ idf.py build flash monitor
 Expected:
 
 ```
-I (530) semantos: init: loading cell-engine-embedded.wasm (36647 bytes)
+I (530) semantos: init: loading cell-engine-embedded.wasm (49097 bytes)
 I (544) hello_cell: load_script rc=0
 I (546) hello_cell: execute rc=0 opcount=3 stack_depth=1 top_ptr=0x... err=0x0
 I (548) hello_cell: === hello cell: success ===
@@ -273,11 +273,16 @@ bun run opcode:parity
 to the current core embedded build and that the edge C wrapper exposes the
 entrypoint needed by `OP_BRANCHONOUTPUT`.
 
-The vendored blob is the July 2026 embedded build. The current core build is
-44 KB and calls a thirteenth host import, `host_consumed_set`, which the
-firmware's host table does not provide yet, so the parity check fails against
-current core and re-vendoring waits on that import. Until then the 12 host
-imports in `docs/HOST_IMPORTS.md` are the whole contract.
+The vendored blob is core's embedded build at `e4160c76f6ce` (November 2026),
+49 KB. It imports a thirteenth host function, `host_consumed_set`: the engine's
+consumed set for LINEAR cells. The kit keeps no consumed set, so its host
+answers "absent" and a script that consumes a cell fails closed, as it did
+before the import existed (`docs/HOST_IMPORTS.md`).
+
+The examples run the engine on WAMR's classic interpreter. The fast one needs
+more of WAMR's memory pool than a C6 can spare beside WiFi;
+`components/semantos/src/runtime_wamr.c` has the measurements, and every boot
+logs how much of the pool is left.
 
 ## Next
 

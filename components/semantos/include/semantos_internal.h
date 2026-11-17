@@ -106,6 +106,14 @@ uint32_t semantos_host_call_by_name(const char *name, uint32_t name_len);
 // Phase 6: octave memory fetch
 uint32_t semantos_host_fetch_cell(uint8_t octave, uint32_t slot, uint32_t offset, uint8_t *out_ptr);
 
+// E3 consumed set (core cell-engine `host_consumed_set`): ops 0 IS_SPENT,
+// 1 SPEND, 2 ANCHOR_SPENT, about the 32-byte SHA-256 of a cell. Answers
+// 0 = no, 1 = yes, 2 = absent. The engine will not instantiate without this
+// import. The kit keeps no consumed set, so the stub answers 2 to every op,
+// which is the engine's behaviour before the import existed: CONSUMECELL
+// and the recorded transforms fail closed (cell_consume_failed).
+uint32_t semantos_host_consumed_set(uint32_t op, const uint8_t *id32);
+
 // Cursor host imports. The public kit ships fail-closed stubs until an app
 // wires these to a cell store.
 uint32_t semantos_host_db_open_cursor(uint32_t filter_ptr, uint32_t filter_len);

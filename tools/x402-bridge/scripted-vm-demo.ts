@@ -2,7 +2,7 @@
 /**
  * scripted-vm-demo.ts — the VM-focused demo.
  *
- * Proves the 36 KB on-device WASM cell-engine is doing the work, not the C
+ * Proves the on-device WASM cell-engine is doing the work, not the C
  * rule layer. It injects a real `cellmesh.scripted.v0` cell carrying a
  * P2PK + OP_CHECKSIG Bitcoin script with a BIP-143 tx context. The board
  * that *receives* the broadcast runs the lock+unlock through the cell-engine

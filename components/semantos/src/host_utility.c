@@ -12,6 +12,7 @@
 //   fetch_cell — octave-memory retrieval stub (returns 0 = failure until
 //                you wire in real higher-octave storage)
 //   cursor ops — cell-store streaming stubs (return empty/failure until wired)
+//   consumed_set — E3 consumed-set stub (answers absent: CONSUMECELL fails closed)
 
 #include "semantos_internal.h"
 
@@ -122,4 +123,16 @@ void semantos_host_db_cursor_close(uint32_t cursor_id) {
              (unsigned)cursor_id);
 #endif
     (void)cursor_id;
+}
+
+// E3: no consumed set on the device. Every op answers ABSENT (2), so a script
+// that tries to consume a LINEAR cell traps rather than consume against a set
+// nobody keeps. Wire a real store here before a board consumes cells.
+uint32_t semantos_host_consumed_set(uint32_t op, const uint8_t *id32) {
+#if CONFIG_SEMANTOS_LOG_HOST_CALLS
+    ESP_LOGI(SEMANTOS_TAG, "consumed_set op=%u (no store: absent)", (unsigned)op);
+#endif
+    (void)op;
+    (void)id32;
+    return 2;
 }

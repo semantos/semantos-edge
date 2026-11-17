@@ -1,11 +1,11 @@
 # Host Imports
 
-The current cell-engine embedded WASM module declares **twelve imports** in the
-`"host"` namespace. The edge kit binds all twelve so the core blob can
+The current cell-engine embedded WASM module declares **thirteen imports** in the
+`"host"` namespace. The edge kit binds all thirteen so the core blob can
 instantiate on ESP32-C6. Some imports are intentionally fail-closed stubs until
 an app wires storage or signing policy.
 
-Source of truth: `packages/cell-engine/src/host.zig` in the main
+Source of truth: `core/cell-engine/src/host.zig` in the main
 Semantos repo. If the main-repo list changes and this table drifts,
 `host.zig` wins.
 
@@ -38,8 +38,10 @@ The embedded profile of the kernel hands `host_checksig` a pre-hashed
 32-byte sighash. If `msg_len` is not 32 we re-hash with SHA-256 as a
 fallback. Public keys are parsed with `mbedtls_ecp_point_read_binary`
 in SEC format (33 bytes compressed or 65 bytes uncompressed).
-Signatures are parsed as DER and verified without a trailing sighash type byte
-(strip it before calling if you're parsing full Bitcoin sigs).
+Signatures arrive as strict DER with no hash-type byte: the kernel removes that
+byte once, before it calls, and holds the DER to BIP-66, so a host never strips
+one. The 32 bytes are the digest, verified as given. Answer 1 for valid and 0
+for anything else.
 
 ### `host_sign` notes
 
@@ -127,6 +129,20 @@ These imports support core's streaming cell-store scan path. The public edge
 kit binds them so the module loads, but leaves storage policy to the app. Wire
 them to NVS, SPIFFS, LittleFS, SD, or an external gateway when an example needs
 local cell-store iteration.
+
+## The consumed-set import
+
+| Symbol | Signature | Implementation |
+| --- | --- | --- |
+| `host_consumed_set` | `(op, id_ptr)` → `u32` | Fail-closed stub: answers 2 (absent) to every op |
+
+The engine's consumed set for LINEAR cells, asked about the 32-byte SHA-256 of
+a cell: op 0 is it spent, op 1 spend it (check, then mark), op 2 is its on-chain
+anchor spent. Answers are 0 no, 1 yes, 2 absent. The engine will not
+instantiate without the import. The kit keeps no set, so it answers absent and
+`OP_CONSUMECELL` and the recorded transforms fail closed, exactly as before the
+import existed. Wire a persistent set (NVS, or a gateway) before a board
+consumes cells.
 
 ## Why these aren't adapters
 

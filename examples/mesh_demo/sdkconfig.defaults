@@ -47,6 +47,11 @@ CONFIG_SEMANTOS_WASM_STACK_SIZE=8192
 CONFIG_MBEDTLS_RIPEMD160_C=y
 CONFIG_WAMR_ENABLE_REF_TYPES=y
 
+# The classic interpreter runs the engine's bytecode in place. The fast one
+# recompiles it into a form that needs ~124 KB of WAMR's pool for the current
+# engine, which leaves no room for WiFi on a C6 (runtime_wamr.c has the numbers).
+CONFIG_WAMR_INTERP_CLASSIC=y
+
 # Disable HW ECC accelerator. The ESP32-C6 peripheral supports P-192/P-256
 # only — the demo uses secp256k1, which falls back to software anyway, but
 # leaving the HW path enabled causes ECDSA verify inside OP_CHECKSIG to
