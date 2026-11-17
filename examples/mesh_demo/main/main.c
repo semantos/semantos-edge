@@ -835,21 +835,18 @@ static size_t domain_script_num(uint32_t v, uint8_t out[5]) {
     return n;
 }
 
-// Static, not stack: a 1024-byte cell plus pushes overflows the task stack.
-static uint8_t s_dft_script[CM_CELL_SIZE + 16];
+// Static, not stack: a 1024-byte cell overflows the task stack.
+static uint8_t s_dft_cell[CM_CELL_SIZE];
 
-/** Run <cell(actual)> <expected> OP_CHECKDOMAINFLAG. true = engine accepted. */
+/** Admit cell(actual), run <expected> OP_CHECKDOMAINFLAG. true = engine accepted. */
 static bool domain_opcode_accepts(uint32_t actual, uint32_t expected, int *out_err) {
-    uint8_t *sp = s_dft_script;
-    uint8_t *cell = sp + 3;                       // after PUSHDATA2 + u16 len
-    *sp++ = 0x4d;                                 // OP_PUSHDATA2
-    *sp++ = (uint8_t)(CM_CELL_SIZE & 0xffu);
-    *sp++ = (uint8_t)((CM_CELL_SIZE >> 8) & 0xffu);
-    memset(cell, 0, CM_CELL_SIZE);
-    cm_cell_init(cell);                           // magic + version
-    cm_set_flags(cell, actual);                   // the field under test
-    sp += CM_CELL_SIZE;
+    memset(s_dft_cell, 0, CM_CELL_SIZE);
+    cm_cell_init(s_dft_cell);                     // magic + version
+    cm_set_linearity(s_dft_cell, CM_LINEARITY_AFFINE); // as the forward cells are; admission refuses a class outside 1-4
+    cm_set_flags(s_dft_cell, actual);             // the field under test
 
+    uint8_t script[1 + 5 + 1];
+    uint8_t *sp = script;
     uint8_t num[5];
     size_t nlen = domain_script_num(expected, num);
     *sp++ = (uint8_t)nlen;                        // direct push (nlen <= 5)
@@ -857,8 +854,17 @@ static bool domain_opcode_accepts(uint32_t actual, uint32_t expected, int *out_e
     *sp++ = 0xC6;                                 // OP_CHECKDOMAINFLAG
 
     semantos_kernel_reset(s_engine);
-    if (semantos_kernel_load_script(s_engine, s_dft_script,
-                                    (uint32_t)(sp - s_dft_script)) != SEMANTOS_OK) {
+    // The cell goes in as an admitted input, as a received cell would. The
+    // kernel's cell opcodes read only a cell the host admitted: pushed inside
+    // the script as data it is refused (47, not_a_cell), which is how this
+    // self-test failed against the current engine before it admitted the cell.
+    int prc = semantos_kernel_push_cell(s_engine, s_dft_cell, CM_CELL_SIZE);
+    if (prc != SEMANTOS_OK) {
+        *out_err = prc;
+        return false;
+    }
+    if (semantos_kernel_load_script(s_engine, script,
+                                    (uint32_t)(sp - script)) != SEMANTOS_OK) {
         *out_err = -1;
         return false;
     }
