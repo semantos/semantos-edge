@@ -7,7 +7,7 @@
     "type": "git",
     "url": "git+https://github.com/semantos/semantos-edge.git"
   },
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "Apache-2.0",
   "scripts": {
     "observe": "bun tools/mesh-observer/server.ts",
     "observe:sim": "bun tools/mesh-observer/server.ts --sim 3",
