@@ -23,6 +23,11 @@ CONFIG_MBEDTLS_RIPEMD160_C=y
 # blob at load time with "zero byte expected". Enable it here.
 CONFIG_WAMR_ENABLE_REF_TYPES=y
 
+# The classic interpreter runs the engine's bytecode in place. The fast one
+# recompiles it into a form that needs ~124 KB of WAMR's pool for the current
+# engine, which leaves no room for WiFi on a C6 (runtime_wamr.c has the numbers).
+CONFIG_WAMR_INTERP_CLASSIC=y
+
 # WAMR's lib_pthread feature defaults ON and calls pthread_self() internally
 # for locking. Our app_main is a normal FreeRTOS task, not a pthread, so
 # pthread_self asserts "Failed to find current thread ID!" and crashes the

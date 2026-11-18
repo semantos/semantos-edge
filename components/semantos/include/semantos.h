@@ -83,6 +83,17 @@ int semantos_kernel_load_unlock(semantos_t *sem,
                                 const uint8_t *unlock,
                                 uint32_t unlock_len);
 
+// Admit a 1024-byte cell onto the main stack as an input. Call after
+// semantos_kernel_reset() and before semantos_kernel_execute(); the order
+// against load_script does not matter. A cell opcode (OP_CHECKDOMAINFLAG and
+// the rest) reads only a cell the host admitted: a cell pushed as script data
+// is refused with error 47, not_a_cell. Returns 0, or the kernel's error code
+// (47 not a cell, 50 already loaded this run, 53 already consumed, 1 stack
+// overflow), and leaves the stack unchanged on a refusal.
+int semantos_kernel_push_cell(semantos_t *sem,
+                              const uint8_t *cell,
+                              uint32_t cell_len);
+
 // Load a BIP143 transaction context. Required before kernel_execute()
 // for any script that uses OP_CHECKSIG / OP_CHECKSIGVERIFY (the engine
 // needs the tx data to compute the sighash preimage). `input_value` is

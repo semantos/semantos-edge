@@ -85,7 +85,7 @@ Only flash hardware when the user explicitly asks.
 The expected `hello_cell` success log includes:
 
 ```text
-semantos: init: loading cell-engine-embedded.wasm (36647 bytes), stack=16384
+semantos: init: loading cell-engine-embedded.wasm (49097 bytes), stack=16384
 hello_cell: semantos_init ok
 hello_cell: kernel_init rc=0
 hello_cell: load_script rc=0

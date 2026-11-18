@@ -126,6 +126,18 @@ int semantos_kernel_load_unlock(semantos_t *sem,
     return rc;
 }
 
+int semantos_kernel_push_cell(semantos_t *sem,
+                              const uint8_t *cell,
+                              uint32_t cell_len) {
+    // The kernel copies the cell onto its own stack, so the staging copy can go.
+    uint32_t wasm_ptr = semantos_runtime_memcpy_in(sem, cell, cell_len);
+    if (wasm_ptr == 0 && cell_len > 0) return SEMANTOS_ERR_INTERNAL;
+    uint32_t argv[2] = { wasm_ptr, cell_len };
+    int rc = call_i32(sem, "kernel_push_cell", argv, 2);
+    semantos_runtime_memfree(sem, wasm_ptr, cell_len);
+    return rc;
+}
+
 // Load a BIP143 transaction context — required by OP_CHECKSIG /
 // OP_CHECKSIGVERIFY before kernel_execute. `tx` is the raw serialized
 // BSV transaction (minimal: version + inputs + outputs + locktime).

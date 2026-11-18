@@ -177,6 +177,12 @@ static void trampoline_host_db_cursor_close(wasm_exec_env_t env,
     semantos_host_db_cursor_close(cursor_id);
 }
 
+static uint32_t trampoline_host_consumed_set(wasm_exec_env_t env,
+                                             uint32_t op, const uint8_t *id32) {
+    (void)env;
+    return semantos_host_consumed_set(op, id32);
+}
+
 static NativeSymbol g_host_native_symbols[] = {
     { "host_sha256",        trampoline_host_sha256,        "(*~*)",   NULL },
     { "host_hash160",       trampoline_host_hash160,       "(*~*)",   NULL },
@@ -194,6 +200,7 @@ static NativeSymbol g_host_native_symbols[] = {
     { "hostDbOpenCursor",   trampoline_host_db_open_cursor, "(ii)i",  NULL },
     { "hostDbCursorPull",   trampoline_host_db_cursor_pull, "(ii)i",  NULL },
     { "hostDbCursorClose",  trampoline_host_db_cursor_close, "(i)",   NULL },
+    { "host_consumed_set",  trampoline_host_consumed_set,  "(i*)i",   NULL },
 };
 
 // ── Backend interface ──
@@ -235,10 +242,26 @@ static NativeSymbol g_host_native_symbols[] = {
 //              board boot-loops. The pool took the contiguous block WiFi needs
 //              for its RX buffers.
 //
-// So the window is real and narrow, and 128 KB sits inside it. This is the
+// So the window was real and narrow, and 128 KB sat inside it. This is the
 // "engine + WiFi don't both fit on a C6" wall from 2026-05, re-measured: it is
 // not that they do not fit, it is that the pool has to be sized between two
 // failure modes that look nothing alike.
+//
+// 2026-10-21 — the window closed, and the cause was the interpreter. The
+// 44 KB engine (core with host_consumed_set) on WAMR's FAST interpreter, which
+// recompiles the module into a larger internal form inside this pool:
+//
+//   128 KB  -> load + instantiate leave 15 KB, fragmented; the exec env (the
+//              WASM stack) cannot be placed, even at 8 KB. Engine absent.
+//   144 KB  -> engine runs (pool high mark 124,304 B), then esp_wifi_init
+//              aborts in cell_radio.c and mesh_demo boot-loops.
+//
+// The same engine on the CLASSIC interpreter, which runs the bytecode in place:
+// pool high mark 22,448 B with an 8 KB stack, load in 70 ms instead of 240.
+// So every example selects CONFIG_WAMR_INTERP_CLASSIC, and the pool is 64 KB:
+// about three times the measured need, and 64 KB more heap for WiFi than the
+// old 128 KB. The stages of each load are logged (log_pool) so the margin is
+// visible on every boot.
 //
 // Linear memory does NOT come from this pool (os_mmap -> heap_caps_malloc, see
 // the note above), which is why a bigger pool starves WiFi rather than helping
@@ -246,9 +269,20 @@ static NativeSymbol g_host_native_symbols[] = {
 #if CONFIG_SPIRAM
 #define WAMR_HEAP_POOL_BYTES (192 * 1024)
 #else
-#define WAMR_HEAP_POOL_BYTES (128 * 1024)
+#define WAMR_HEAP_POOL_BYTES (64 * 1024)
 #endif
 static uint8_t *g_wamr_heap_pool = NULL;
+
+// How much of the pool is left, logged at each stage of a load: the pool is
+// sized inside a narrow window (above), so a failure must say how close it was.
+static void log_pool(const char *stage) {
+    mem_alloc_info_t info;
+    if (wasm_runtime_get_mem_alloc_info(&info)) {
+        ESP_LOGI(SEMANTOS_TAG, "wamr pool after %s: %u of %u bytes free (high mark %u)",
+                 stage, (unsigned)info.total_free_size, (unsigned)info.total_size,
+                 (unsigned)info.highmark_size);
+    }
+}
 
 esp_err_t semantos_runtime_load(semantos_t *sem, const uint8_t *wasm, size_t wasm_len) {
     if (!wamr_runtime_ready) {
@@ -308,11 +342,14 @@ esp_err_t semantos_runtime_load(semantos_t *sem, const uint8_t *wasm, size_t was
     char err_buf[96] = {0};
     bk->module = wasm_runtime_load(bk->wasm_ram_copy, wasm_len, err_buf, sizeof(err_buf));
     if (!bk->module) {
+        log_pool("failed load");
         ESP_LOGE(SEMANTOS_TAG, "wasm_runtime_load: %s", err_buf);
         free(bk->wasm_ram_copy);
         free(bk);
         return ESP_FAIL;
     }
+
+    log_pool("load");
 
     // Heap size = WASM module's internal heap (appended to the linear-
     // memory mmap). semantos.c uses wasm_runtime_module_malloc to copy
@@ -334,8 +371,14 @@ esp_err_t semantos_runtime_load(semantos_t *sem, const uint8_t *wasm, size_t was
         return ESP_FAIL;
     }
 
+    log_pool("instantiate");
     bk->exec_env = wasm_runtime_create_exec_env(bk->instance, sem->wasm_stack_size);
     if (!bk->exec_env) {
+        // It takes the WASM stack from the pool, so an exhausted pool fails here
+        // and said nothing before this line existed.
+        ESP_LOGE(SEMANTOS_TAG, "wasm_runtime_create_exec_env(stack=%u) failed",
+                 (unsigned)sem->wasm_stack_size);
+        log_pool("failed exec env");
         wasm_runtime_deinstantiate(bk->instance);
         wasm_runtime_unload(bk->module);
         free(bk->wasm_ram_copy);
@@ -343,6 +386,7 @@ esp_err_t semantos_runtime_load(semantos_t *sem, const uint8_t *wasm, size_t was
         return ESP_FAIL;
     }
 
+    log_pool("exec env");
     sem->backend = bk;
     return ESP_OK;
 }
