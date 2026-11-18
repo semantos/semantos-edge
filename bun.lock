@@ -1,10 +1,11 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "@semantos/edge-kit",
       "dependencies": {
-        "@bsv/sdk": "^2.0.0",
+        "@bsv/sdk": "^4.1.0",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -12,7 +13,7 @@
     },
   },
   "packages": {
-    "@bsv/sdk": ["@bsv/sdk@2.1.4", "", {}, "sha512-FrX5knwUZXPJHVaE9usoevwWqLItiWCFIr2jD20W3Ke6I+IHbDyivMF8MKtrWSeOxeanFx9v8YLeN6/qzAtlzQ=="],
+    "@bsv/sdk": ["@bsv/sdk@4.1.1", "", {}, "sha512-s/ComOkwz/Z8pyC2JOJUqazSwNNNJIxgb+UuULfsuTcJKzw3DUoXYA5HLzN7Bj+nYILUGAqc1CSwSMF7g22ZSw=="],
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 

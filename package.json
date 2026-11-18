@@ -7,7 +7,7 @@
     "type": "git",
     "url": "git+https://github.com/semantos/semantos-edge.git"
   },
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "Apache-2.0",
   "scripts": {
     "observe": "bun tools/mesh-observer/server.ts",
     "observe:sim": "bun tools/mesh-observer/server.ts --sim 3",
@@ -34,7 +34,7 @@
     "fleet:zig:interop": "cd tools/fleet-zig && zig build export-recipe > /tmp/zig-recipe.json && node vectors/check-recipe-interop.mjs /tmp/zig-recipe.json"
   },
   "dependencies": {
-    "@bsv/sdk": "^2.0.0"
+    "@bsv/sdk": "^4.1.0"
   },
   "devDependencies": {
     "@types/bun": "latest"

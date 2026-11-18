@@ -1,0 +1,12 @@
+semantos-edge
+Copyright 2026 Semantos / Todd Price
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Releases before 2026-11-19 were under the Open BSV License (version 4 until
+2026-10-21, then version 6) and keep those terms.
+
+components/semantos/wasm/cell-engine-embedded.wasm is built from the Semantos
+cell engine, Apache-2.0 from 2026-11-19. The firmware's runtime and crypto,
+WAMR and mbedTLS, are Apache-2.0. The host tools depend on @bsv/sdk, which is
+Apache-2.0 from version 4.1.0.

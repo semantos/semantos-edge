@@ -245,9 +245,8 @@ settlement streams. See `docs/SMART-CITY-THROUGHPUT.md`.
 
 ## License
 
-Open BSV License Version 6. Read `LICENSE` before assuming anything about what
-it permits: it is not an OSI licence, it grants no patent rights, and it binds
-derived software to BSV.
+Apache License, Version 2.0: see `LICENSE` and `NOTICE`. Releases before
+2026-11-19 were under the Open BSV License and keep those terms.
 
 ## Where the WASM blob comes from
 
